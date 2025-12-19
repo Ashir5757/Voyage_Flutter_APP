@@ -1,12 +1,13 @@
-// lib/main.dart - SIMPLE VERSION
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:tour/firebase_options.dart';
 import 'package:tour/pages/home.dart';
 import 'package:tour/services/auth_service.dart';
-import 'package:tour/pages/splash_screen.dart';
+import 'package:tour/services/audio_service.dart';
+// 1. IMPORT YOUR CONTROLLER
+import 'package:tour/controllers/home_controller.dart'; 
+
 import 'package:tour/pages/login_screen.dart';
 import 'package:tour/pages/register_screen.dart';
 
@@ -28,6 +29,10 @@ class MyApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AuthService()),
+        ChangeNotifierProvider(create: (_) => AudioService()),
+        // 2. ADD THIS LINE
+        // This makes the controller available to ALL pages (Profile, Details, etc.)
+        ChangeNotifierProvider(create: (_) => HomeController()), 
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
@@ -95,8 +100,7 @@ class MyApp extends StatelessWidget {
           ),
         ),
         
-        // Simple navigation - Home is default
-        home: const Home(), // Everyone starts at Home
+        home: const Home(), 
         
         routes: {
           '/login': (context) => const LoginScreen(),

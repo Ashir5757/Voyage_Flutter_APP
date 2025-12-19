@@ -18,6 +18,17 @@
 </plist>
 
 	<key>CFBundleDevelopmentRegion</key>
+	<array>
+    <dict>
+        <key>CFBundleTypeRole</key>
+        <string>Editor</string>
+        <key>CFBundleURLName</key>
+        <string>com.yourcompany.tour</string> <key>CFBundleURLSchemes</key>
+        <array>
+            <string>voyage</string>
+        </array>
+    </dict>
+</array>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>Tour</string>

@@ -7,6 +7,42 @@
   "client": [
     {
       "client_info": {
+        "mobilesdk_app_id": "1:618219276946:android:ac55de2240b65a5cfe344b",
+        "android_client_info": {
+          "package_name": "com.ashirabbasi.voyage"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "618219276946-0v6st44dllierglgrp6cdej6ptf4cra6.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCKd9nuhoQvVCkGFR9R6CgrDiltHXxY8HM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "618219276946-0v6st44dllierglgrp6cdej6ptf4cra6.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "618219276946-3q8sgmb2vfbiip1nvsgdv5ujkautt9dl.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.tour"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:618219276946:android:01b6775ada55e164fe344b",
         "android_client_info": {
           "package_name": "com.example.tour"
