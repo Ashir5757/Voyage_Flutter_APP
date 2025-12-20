@@ -8,12 +8,13 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:tour/pages/music_selection_page.dart';
 
 class EditPostPage extends StatefulWidget {
-  final Map<String, dynamic> postData;
+  // Renaming this to match what you are calling in MyPostsPage
+  final Map<String, dynamic> currentData; 
   final String postId;
 
   const EditPostPage({
     super.key, 
-    required this.postData, 
+    required this.currentData, // Matches the call in MyPostsPage
     required this.postId
   });
 
@@ -38,8 +39,6 @@ class _EditPostPageState extends State<EditPostPage> {
   
   // Audio Player
   final AudioPlayer _musicPlayer = AudioPlayer();
-  Duration _currentPosition = Duration.zero;
-  Duration _totalDuration = Duration.zero;
   bool _isPlaying = false;
   
   // Cloudinary Config (Same as AddPost)
@@ -54,21 +53,21 @@ class _EditPostPageState extends State<EditPostPage> {
   }
 
   void _initializeData() {
-    // 1. Text Fields
-    _locationController = TextEditingController(text: widget.postData['location']);
-    _descriptionController = TextEditingController(text: widget.postData['description']);
+    // 1. Text Fields - using widget.currentData
+    _locationController = TextEditingController(text: widget.currentData['location']);
+    _descriptionController = TextEditingController(text: widget.currentData['description']);
 
     // 2. Images
-    if (widget.postData['imageUrls'] != null) {
-      _existingImageUrls = List<String>.from(widget.postData['imageUrls']);
-    } else if (widget.postData['image'] != null) {
-      _existingImageUrls = [widget.postData['image']];
+    if (widget.currentData['imageUrls'] != null) {
+      _existingImageUrls = List<String>.from(widget.currentData['imageUrls']);
+    } else if (widget.currentData['image'] != null) {
+      _existingImageUrls = [widget.currentData['image']];
     }
 
     // 3. Music
-    _selectedMusicUrl = widget.postData['musicUrl'];
-    _selectedMusicTitle = widget.postData['musicTitle'];
-    _selectedMusicArtist = widget.postData['musicArtist'];
+    _selectedMusicUrl = widget.currentData['musicUrl'];
+    _selectedMusicTitle = widget.currentData['musicTitle'];
+    _selectedMusicArtist = widget.currentData['musicArtist'];
 
     // 4. Pre-load music if exists
     if (_selectedMusicUrl != null) {
@@ -80,17 +79,11 @@ class _EditPostPageState extends State<EditPostPage> {
     try {
       await _musicPlayer.setUrl(_selectedMusicUrl!);
     } catch (e) {
-      print("Error pre-loading music: $e");
+      debugPrint("Error pre-loading music: $e");
     }
   }
 
   void _setupAudioListeners() {
-    _musicPlayer.positionStream.listen((position) {
-      if (mounted) setState(() => _currentPosition = position);
-    });
-    _musicPlayer.durationStream.listen((duration) {
-      if (mounted && duration != null) setState(() => _totalDuration = duration);
-    });
     _musicPlayer.playerStateStream.listen((state) {
       if (mounted) setState(() => _isPlaying = state.playing);
     });
@@ -141,13 +134,13 @@ class _EditPostPageState extends State<EditPostPage> {
             _newImages[i].path,
             resourceType: CloudinaryResourceType.Image,
             folder: 'voyage/posts/${widget.postId}',
-            // Use timestamp to avoid overwriting if user adds images multiple times
+            // Use timestamp to avoid overwriting
             publicId: '${widget.postId}_new_${DateTime.now().millisecondsSinceEpoch}_$i', 
           ),
         );
         newUrls.add(response.secureUrl);
       } catch (e) {
-        print('Upload failed for image $i: $e');
+        debugPrint('Upload failed for image $i: $e');
         throw Exception('Failed to upload image');
       }
     }
@@ -201,7 +194,7 @@ class _EditPostPageState extends State<EditPostPage> {
       }
 
     } catch (e) {
-      print('Update Error: $e');
+      debugPrint('Update Error: $e');
       if (mounted) _showSnackbar('Failed to update post', Colors.red);
     } finally {
       if (mounted) setState(() => _isUpdating = false);
@@ -233,7 +226,7 @@ class _EditPostPageState extends State<EditPostPage> {
         await _musicPlayer.setUrl(_selectedMusicUrl!);
         await _musicPlayer.play();
       } catch (e) {
-        print("Error playing new music: $e");
+        debugPrint("Error playing new music: $e");
       }
     }
   }

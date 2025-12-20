@@ -4,10 +4,12 @@ import 'package:cached_network_image/cached_network_image.dart';
 
 class FeedVideoPlayer extends StatefulWidget {
   final String videoUrl;
+  final bool shouldPlay; // ✅ Added this parameter
 
   const FeedVideoPlayer({
     super.key, 
     required this.videoUrl,
+    this.shouldPlay = false, // ✅ Added with default value
   });
 
   @override
@@ -21,13 +23,44 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
   bool _hasError = false;
 
   @override
+  void initState() {
+    super.initState();
+    // If the feed says this video should play immediately upon loading
+    if (widget.shouldPlay) {
+      _initializeVideo();
+    }
+  }
+
+  // ✅ Listen for changes from the Parent (HomeContent)
+  @override
+  void didUpdateWidget(covariant FeedVideoPlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    
+    // If parent says "Play" and we weren't playing
+    if (widget.shouldPlay && !oldWidget.shouldPlay) {
+      if (!_isInitialized) {
+        _initializeVideo();
+      } else {
+        _controller?.play();
+        setState(() => _isPlaying = true);
+      }
+    }
+    
+    // If parent says "Stop" (scrolled away)
+    if (!widget.shouldPlay && oldWidget.shouldPlay) {
+      _controller?.pause();
+      setState(() => _isPlaying = false);
+    }
+  }
+
+  @override
   void dispose() {
     _controller?.dispose();
     super.dispose();
   }
 
   Future<void> _initializeVideo() async {
-    if (_controller != null) return; // Already initialized
+    if (_controller != null && _isInitialized) return; 
 
     // 1. Create Controller
     _controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
@@ -36,13 +69,17 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
       await _controller!.initialize();
       setState(() {
         _isInitialized = true;
-        _isPlaying = true;
+        _isPlaying = true; // Auto-play on init
       });
+      
       await _controller!.play();
       await _controller!.setLooping(true);
+      
     } catch (e) {
       debugPrint("Video Error: $e");
-      setState(() => _hasError = true);
+      if (mounted) {
+        setState(() => _hasError = true);
+      }
     }
   }
 
@@ -65,13 +102,11 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
   }
 
   // Cloudinary Trick: Change extension to .jpg to get a thumbnail!
-  // This works because Cloudinary automatically generates thumbnails for videos.
   String _getThumbnailUrl(String videoUrl) {
     if (videoUrl.contains('cloudinary.com')) {
-      // Replace file extension (e.g., .mp4) with .jpg
       return videoUrl.replaceAll(RegExp(r'\.[a-zA-Z0-9]+$'), '.jpg');
     }
-    return videoUrl; // Fallback if not Cloudinary
+    return videoUrl; 
   }
 
   @override
@@ -87,7 +122,7 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
         color: Colors.black,
         // Constraints: Don't let it get too tall (like 9:16 stories) or too short
         constraints: const BoxConstraints(
-          maxHeight: 500, // Max height similar to Instagram 4:5
+          maxHeight: 500, 
           minHeight: 250,
         ),
         child: Center(
@@ -97,7 +132,7 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
               alignment: Alignment.center,
               children: [
                 // A. THE VIDEO (If initialized)
-                if (_isInitialized)
+                if (_isInitialized && _controller != null)
                   VideoPlayer(_controller!)
                 
                 // B. THE THUMBNAIL (If NOT initialized or Loading)
@@ -137,7 +172,7 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
                   ),
                   
                 // F. SOUND ICON (Optional visual cue)
-                if (_isInitialized)
+                if (_isInitialized && _controller != null)
                   Positioned(
                     bottom: 10, right: 10,
                     child: Container(

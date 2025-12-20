@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
-
+import 'package:flutter/foundation.dart';
 // PAGE IMPORTS
 import 'package:tour/pages/add_post_page.dart';
 import 'package:tour/pages/profile_page.dart';
@@ -23,8 +23,11 @@ class HomeController extends ChangeNotifier {
   User? _currentUser;
 
   // --- FEED DATA ---
-  final Map<String, GlobalKey> postKeys = {}; // Stores position of every post
-  List<DocumentSnapshot> visiblePosts = [];   // Stores the actual post data
+  // ❌ DELETED: postKeys is removed from here to prevent GlobalKey crashes.
+  
+  // VISIBILITY TRACKING
+  List<DocumentSnapshot> _visiblePosts = [];
+  List<DocumentSnapshot> get visiblePosts => _visiblePosts;
 
   // --- SEARCH VARIABLES ---
   bool isSearching = false;
@@ -44,6 +47,15 @@ class HomeController extends ChangeNotifier {
   }
 
   User? get currentUser => _currentUser;
+
+  // --- VISIBILITY LOGIC ---
+  void updateVisiblePosts(List<DocumentSnapshot> posts) {
+    // This check prevents the "Red Screen" and infinite loops
+    if (!listEquals(_visiblePosts, posts)) {
+      _visiblePosts = posts;
+      // We do NOT notify listeners here to avoid rebuilding during build phase.
+    }
+  }
 
   @override
   void dispose() {
@@ -94,7 +106,6 @@ class HomeController extends ChangeNotifier {
   }
 
   void navigateToLogin(BuildContext context) {
-    // Assuming you have named routes set up in main.dart
     Navigator.pushNamed(context, '/login');
   }
   
@@ -147,13 +158,13 @@ class HomeController extends ChangeNotifier {
   }
   
   void searchDestinations() {
-    // Optional: Add extra logic here if "Enter" is pressed
     FocusManager.instance.primaryFocus?.unfocus();
   }
 
   // --- AUTO-PLAY LOGIC ---
 
-  void handleAutoPlay(BuildContext context, AudioService audioService) {
+  // ✅ UPDATED: Now accepts 'currentKeys' from the UI
+  void handleAutoPlay(BuildContext context, AudioService audioService, Map<String, GlobalKey> currentKeys) {
     // Stop if searching or menu is open
     if (showUserDropdown || searchController.text.isNotEmpty) {
       audioService.stop();
@@ -163,14 +174,13 @@ class HomeController extends ChangeNotifier {
     String? bestPostId;
     double minDistance = double.infinity;
     
-    // Get screen metrics
     final screenHeight = MediaQuery.of(context).size.height;
     final screenCenter = screenHeight / 2;
 
-    // Find the post closest to the center of the screen
+    // Use the keys passed in from the UI
     for (var doc in visiblePosts) {
       final postId = doc.id;
-      final key = postKeys[postId];
+      final key = currentKeys[postId]; // ✅ Using local parameter
 
       if (key != null && key.currentContext != null) {
         final RenderBox box = key.currentContext!.findRenderObject() as RenderBox;
@@ -178,7 +188,6 @@ class HomeController extends ChangeNotifier {
         final postCenter = position.dy + (box.size.height / 2);
         final distance = (postCenter - screenCenter).abs();
 
-        // Threshold: Post must be within 40% of screen center to activate
         if (distance < minDistance && distance < (screenHeight * 0.4)) { 
           minDistance = distance;
           bestPostId = postId;
@@ -186,15 +195,13 @@ class HomeController extends ChangeNotifier {
       }
     }
 
-    // Play the best candidate
     if (bestPostId != null) {
+       // logic to play music...
        if (audioService.currentPostId == bestPostId && audioService.isPlaying) {
-         return; // Already playing this one
+         return; 
        }
-
        final postSnapshot = visiblePosts.firstWhere((d) => d.id == bestPostId);
        final postData = postSnapshot.data() as Map<String, dynamic>;
-       
        String? musicUrl = postData['musicUrl'] ?? postData['music'];
        
        if (musicUrl != null && musicUrl.isNotEmpty) {

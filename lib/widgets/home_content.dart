@@ -11,8 +11,9 @@ import 'package:cross_file/cross_file.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 
-// Ensure this import exists
+// VIDEO PLAYER IMPORT
 import 'package:tour/widgets/feed_video_player.dart'; 
 
 class HomeContent extends StatefulWidget {
@@ -50,6 +51,8 @@ class HomeContent extends StatefulWidget {
 }
 
 class _HomeContentState extends State<HomeContent> {
+  // LOCAL KEYS to prevent "Duplicate GlobalKey" crash
+  final Map<String, GlobalKey> _localPostKeys = {};
 
   @override
   Widget build(BuildContext context) {
@@ -77,7 +80,6 @@ class _HomeContentState extends State<HomeContent> {
               return Positioned(
                 top: -parallaxOffset,
                 left: 0, right: 0, height: 350,
-                // We keep RepaintBoundary HERE because it is static and safe
                 child: RepaintBoundary(child: _buildHeroContent()),
               );
             },
@@ -86,8 +88,13 @@ class _HomeContentState extends State<HomeContent> {
           // 2. MAIN FEED
           NotificationListener<ScrollNotification>(
             onNotification: (notification) {
-              if (notification is ScrollEndNotification) {
-                widget.controller.handleAutoPlay(context, audioService);
+              if (notification is ScrollEndNotification && mounted) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) {
+                    // PASS LOCAL KEYS TO CONTROLLER
+                    widget.controller.handleAutoPlay(context, audioService, _localPostKeys);
+                  }
+                });
               }
               return false;
             },
@@ -223,14 +230,8 @@ class _HomeContentState extends State<HomeContent> {
           );
         }
 
-        // --- UPDATED FIX ---
-        // Use addPostFrameCallback to safely update the controller.
-        // This prevents the "Red Screen" crash during page reloads.
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && widget.controller.visiblePosts != displayDocs) {
-            widget.controller.visiblePosts = displayDocs;
-          }
-        });
+        // Safe update for controller
+        widget.controller.updateVisiblePosts(displayDocs);
 
         return SliverList(
           delegate: SliverChildBuilderDelegate(
@@ -238,12 +239,13 @@ class _HomeContentState extends State<HomeContent> {
               final doc = displayDocs[index];
               final post = doc.data() as Map<String, dynamic>;
 
-              if (!widget.controller.postKeys.containsKey(doc.id)) {
-                widget.controller.postKeys[doc.id] = GlobalKey();
+              // GENERATE LOCAL KEYS
+              if (!_localPostKeys.containsKey(doc.id)) {
+                _localPostKeys[doc.id] = GlobalKey();
               }
 
              return Container(
-                key: widget.controller.postKeys[doc.id],
+                key: _localPostKeys[doc.id], 
                 child: TravelPostCard(
                   post: post,
                   postId: doc.id,
@@ -436,7 +438,7 @@ class _HomeContentState extends State<HomeContent> {
   }
 }
 
-// ... (KEEP your TravelPostCard code below exactly as it was) ...
+// --- POST CARD ---
 class TravelPostCard extends StatefulWidget {
   final Map<String, dynamic> post;
   final String postId;
@@ -463,6 +465,7 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
 
   bool _isSharing = false;
   int _currentImageIndex = 0;
+  bool _isDescriptionExpanded = false; 
   
   late bool _isLiked;
   late int _likesCount;
@@ -561,7 +564,6 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
     }
   }
 
-  // --- HELPER TO DETECT VIDEO ---
   bool _isVideo(String url) {
     final lower = url.toLowerCase();
     return lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.avi') || lower.contains('/video/upload/');
@@ -790,10 +792,9 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
 
   Widget _buildImageCarousel(bool isCurrentPost, AudioService audioService, String? musicTitle) {
     return SizedBox(
-      height: 300,
+      height: 300, 
       child: Stack(
         children: [
-          // 1. IMAGE CAROUSEL
           PageView.builder(
             controller: _pageController,
             itemCount: _imageUrls.length,
@@ -801,8 +802,15 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
               setState(() => _currentImageIndex = index);
             },
             itemBuilder: (context, imgIndex) {
+              final url = _imageUrls[imgIndex];
+              if (_isVideo(url)) {
+                return FeedVideoPlayer(
+                  videoUrl: url,
+                  shouldPlay: isCurrentPost && audioService.isPlaying,
+                );
+              }
               return CachedNetworkImage(
-                imageUrl: _imageUrls[imgIndex],
+                imageUrl: url,
                 fit: BoxFit.cover,
                 width: double.infinity,
                 placeholder: (context, url) => Container(color: Colors.grey[200]),
@@ -811,7 +819,6 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
             },
           ),
 
-          // 2. DOTS INDICATOR (Only if > 1 image)
           if (_imageUrls.length > 1)
             Positioned(
               bottom: 10, left: 0, right: 0,
@@ -834,7 +841,6 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
               ),
             ),
 
-          // 3. MUSIC OVERLAY (Updated)
           if (widget.post['musicUrl'] != null && (widget.post['musicUrl'] as String).isNotEmpty)
             Positioned(
               bottom: 16, 
@@ -848,18 +854,16 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
                     await audioService.play(musicUrl, widget.postId);
                   }
                 },
-                // Glass-like container
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.6), // Darker for readability
-                    borderRadius: BorderRadius.circular(30), // Pill shape
+                    color: Colors.black.withOpacity(0.6),
+                    borderRadius: BorderRadius.circular(30),
                     border: Border.all(color: Colors.white.withOpacity(0.2), width: 0.5),
                   ),
                   child: Row(
-                    mainAxisSize: MainAxisSize.min, // SHRINK TO FIT CONTENT
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      // A. Loader or Icon
                       if (isCurrentPost && audioService.isLoading)
                         const SizedBox(
                           width: 14, height: 14,
@@ -876,9 +880,8 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
                         
                       const SizedBox(width: 6),
                       
-                      // B. Music Title (Constrained width to prevent overflow)
                       ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 100), // Max limit
+                        constraints: const BoxConstraints(maxWidth: 100),
                         child: Text(
                           musicTitle ?? 'Music',
                           maxLines: 1,
@@ -891,7 +894,6 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
                         ),
                       ),
                       
-                      // C. Animated Music Note (Visual Flair)
                       if (isCurrentPost && audioService.isPlaying) ...[
                         const SizedBox(width: 4),
                         const Icon(Icons.music_note, color: Colors.white70, size: 10),
@@ -932,16 +934,6 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
           
           const SizedBox(width: 10),
           
-          // IconButton(
-          //   onPressed: widget.onCommentPressed,
-          //   icon: Icon(Icons.comment_outlined, size: 26, color: Colors.grey[700]),
-          // ),
-          
-          // Text(
-          //   '$_comments', 
-          //   style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)
-          // ),
-          
           const Spacer(),
           
           IconButton(
@@ -958,20 +950,68 @@ class _TravelPostCardState extends State<TravelPostCard> with SingleTickerProvid
     );
   }
 
+  // ✅ FIXED: "Read More" with smooth size animation
   Widget _buildDescription() {
+    final description = widget.post['description'] as String? ?? '';
+    
+    if (description.isEmpty) return const SizedBox.shrink();
+
+    // Heuristic: Text is "long" if > 60 chars or has a new line
+    final bool isLong = description.length > 60 || description.contains('\n');
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 2, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            widget.post['description'] as String? ?? '',
-            style: const TextStyle(fontSize: 14),
+          // AnimatedSize handles the "box changing size" smoothly
+          AnimatedSize(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            alignment: Alignment.topLeft,
+            child: GestureDetector(
+              onTap: () {
+                if (isLong) {
+                  setState(() {
+                    _isDescriptionExpanded = !_isDescriptionExpanded;
+                  });
+                }
+              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    description,
+                    style: const TextStyle(fontSize: 14, height: 1.3),
+                    // If expanded, show all (null). If collapsed, show 1 line.
+                    maxLines: _isDescriptionExpanded ? null : 1,
+                    overflow: _isDescriptionExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                  ),
+                  
+                  // The "Read more" / "Show less" button
+                  if (isLong)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6.0),
+                      child: Text(
+                        _isDescriptionExpanded ? 'Show less' : 'Read more',
+                        style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
-          const SizedBox(height: 4),
+          
+          const SizedBox(height: 6),
+          
+          // Timestamp
           Text(
             _formatTimestamp(widget.post['createdAt']),
-            style: const TextStyle(fontSize: 11, color: Colors.grey),
+            style: TextStyle(fontSize: 11, color: Colors.grey[400]),
           ),
         ],
       ),
