@@ -27,10 +27,9 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  // --- LOGIC SECTION (RE-INTEGRATED) ---
+  // --- LOGIC SECTION (UPDATED) ---
 
   void _handleNavigation() {
-    // Zero delay redirect as requested
     Navigator.pushReplacementNamed(context, '/');
   }
 
@@ -43,11 +42,64 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      // 1. Sign in the user
       await Provider.of<AuthService>(context, listen: false).signInWithEmail(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
+
+      // 2. Get the current user instance
+      User? user = FirebaseAuth.instance.currentUser;
       
+      if (user != null && !user.emailVerified) {
+        // --- THE "NEW EMAIL" LOGIC ---
+        
+        // We sign them out because they aren't verified
+        await FirebaseAuth.instance.signOut();
+        
+        if (mounted) {
+          setState(() {
+            _isSuccess = false;
+            _isSubmitting = false;
+            _statusMessage = "Email not verified. Please check your inbox.";
+          });
+
+          // Show a SnackBar with a "Resend" button
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text("Need a new verification link?"),
+              backgroundColor: Colors.black,
+              duration: const Duration(seconds: 5),
+              action: SnackBarAction(
+                label: "RESEND",
+                textColor: Colors.deepPurpleAccent,
+                onPressed: () async {
+                  // To resend, we briefly sign in again just to trigger the email
+                  try {
+                    UserCredential cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
+                      email: _emailController.text.trim(),
+                      password: _passwordController.text.trim(),
+                    );
+                    await cred.user!.sendEmailVerification();
+                    await FirebaseAuth.instance.signOut(); // Sign back out
+                    
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text("New link sent! Please check your email."))
+                      );
+                    }
+                  } catch (e) {
+                    debugPrint("Resend failed: $e");
+                  }
+                },
+              ),
+            ),
+          );
+        }
+        return; 
+      }
+      
+      // ✅ If verified, proceed to Home
       if (mounted) {
         setState(() {
           _isSuccess = true;
@@ -73,8 +125,11 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      // Uses the AuthService with the SHA-1 keys you already fixed
       await Provider.of<AuthService>(context, listen: false).signInWithGoogle();
+      
+      // Google accounts are auto-verified, so we don't strictly need to check, 
+      // but you can add the same check here if you want to be safe.
+      
       if (mounted) {
         setState(() {
           _isSuccess = true;
@@ -93,7 +148,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // --- UI SECTION (RESPONSIVE) ---
+  // --- UI SECTION (SAME AS BEFORE) ---
 
   @override
   Widget build(BuildContext context) {
@@ -114,7 +169,6 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
       body: Center(
         child: Container(
-          // Constraints ensure the form doesn't stretch too wide on tablets
           constraints: BoxConstraints(maxWidth: isTablet ? 450 : double.infinity),
           child: SafeArea(
             child: SingleChildScrollView(
@@ -130,7 +184,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   const Text("Sign in to continue", style: TextStyle(fontSize: 16, color: Colors.grey)),
                   const SizedBox(height: 40),
 
-                  // TOP STATUS MESSAGE
                   if (_statusMessage != null) _buildStatusBanner(),
 
                   Form(
@@ -206,7 +259,7 @@ class _LoginScreenState extends State<LoginScreen> {
     return Align(
       alignment: Alignment.centerRight,
       child: TextButton(
-        onPressed: () {}, // Add your reset password logic here
+        onPressed: () {}, 
         child: const Text("Forgot Password?", style: TextStyle(color: Colors.black54)),
       ),
     );

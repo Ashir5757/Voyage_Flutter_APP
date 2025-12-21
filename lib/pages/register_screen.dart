@@ -33,7 +33,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Future<void> _register() async {
     if (!_formKey.currentState!.validate()) return;
-    
+
     if (_passwordController.text != _confirmPasswordController.text) {
       setState(() {
         _isSuccess = false;
@@ -48,24 +48,49 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
 
     try {
-      await Provider.of<AuthService>(context, listen: false).signUpWithEmail(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
-        name: _nameController.text.trim(),
-      );
+      // 1. Create the account (Firebase auto-signs them in here)
+      try {
+        await Provider.of<AuthService>(context, listen: false).signUpWithEmail(
+          email: _emailController.text.trim(),
+          password: _passwordController.text.trim(),
+          name: _nameController.text.trim(),
+        );
+      } on FirebaseAuthException catch (e) {
+        if (e.code == 'email-already-in-use') {
+          // If already exists, we still try to send verification below
+        } else {
+          rethrow;
+        }
+      }
 
+      // 2. Send Verification Email
       User? user = FirebaseAuth.instance.currentUser;
       if (user != null && !user.emailVerified) {
-        await user.sendEmailVerification();
+        try {
+          await user.sendEmailVerification();
+        } catch (e) {
+          debugPrint("Rate limit on email: $e");
+        }
+
+        // 3. CRITICAL: Sign Out immediately!
+        // This prevents the user from being redirected to the Home page ('/')
+        await FirebaseAuth.instance.signOut();
       }
-      
+
+      // 4. Update UI and Redirect to Login
       if (mounted) {
         setState(() {
           _isSuccess = true;
-          _statusMessage = 'Verification email sent! Redirecting...';
+          _statusMessage = 'Account created! Please verify your email before logging in.';
         });
-        // Instant navigation to Home
-        Navigator.pushReplacementNamed(context, '/');
+
+        // Give them 3 seconds to read the message
+        await Future.delayed(const Duration(seconds: 3));
+        
+        if (mounted) {
+          // Redirect to Login, NOT the Home page
+          Navigator.pushReplacementNamed(context, '/login');
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -77,7 +102,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
       }
     }
   }
-
   @override
   Widget build(BuildContext context) {
     // Determine screen width for responsiveness

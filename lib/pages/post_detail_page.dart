@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
 import 'package:tour/services/audio_service.dart';
-import 'package:tour/widgets/home_content.dart'; // Imports TravelPostCard
+import 'package:tour/widgets/home_content.dart';
+import 'package:tour/widgets/travel_post_card.dart'; // Imports TravelPostCard
 
 class PostDetailPage extends StatelessWidget {
   final String postId;
@@ -64,7 +65,7 @@ class PostDetailPage extends StatelessWidget {
 
             // 3. Success State - Show the Card
             final post = snapshot.data!.data() as Map<String, dynamic>;
-
+  
             return SingleChildScrollView(
               padding: const EdgeInsets.only(top: 12, bottom: 20),
               child: TravelPostCard(
