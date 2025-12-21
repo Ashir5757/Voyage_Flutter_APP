@@ -2,19 +2,19 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // Added for User Profile
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloudinary_public/cloudinary_public.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:tour/pages/music_selection_page.dart';
+import 'package:tour/services/storage_service.dart'; // Secure Service
 
 class EditPostPage extends StatefulWidget {
-  // Renaming this to match what you are calling in MyPostsPage
   final Map<String, dynamic> currentData; 
   final String postId;
 
   const EditPostPage({
     super.key, 
-    required this.currentData, // Matches the call in MyPostsPage
+    required this.currentData, 
     required this.postId
   });
 
@@ -23,13 +23,17 @@ class EditPostPage extends StatefulWidget {
 }
 
 class _EditPostPageState extends State<EditPostPage> {
-  // Controllers
+  // --- SECURE STORAGE SERVICE ---
+  final StorageService _storage = CloudinaryStorageService();
+
   late TextEditingController _locationController;
   late TextEditingController _descriptionController;
   
   // Image State
-  List<String> _existingImageUrls = []; // URLs from Firebase
-  final List<XFile> _newImages = [];    // New files from Gallery
+  List<String> _existingImageUrls = []; 
+  final List<XFile> _newImages = [];    
+  final List<String> _imagesToDeleteFromCloud = []; // Smart Delete Queue
+
   bool _isUpdating = false;
   
   // Music State
@@ -39,11 +43,11 @@ class _EditPostPageState extends State<EditPostPage> {
   
   // Audio Player
   final AudioPlayer _musicPlayer = AudioPlayer();
+  Duration _currentPosition = Duration.zero;
+  Duration _totalDuration = Duration.zero;
   bool _isPlaying = false;
   
-  // Cloudinary Config (Same as AddPost)
-  final String _cloudName = 'dseozz7gs'; 
-  final String _uploadPreset = 'voyage_profile_upload'; 
+  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   @override
   void initState() {
@@ -53,23 +57,19 @@ class _EditPostPageState extends State<EditPostPage> {
   }
 
   void _initializeData() {
-    // 1. Text Fields - using widget.currentData
     _locationController = TextEditingController(text: widget.currentData['location']);
     _descriptionController = TextEditingController(text: widget.currentData['description']);
 
-    // 2. Images
     if (widget.currentData['imageUrls'] != null) {
       _existingImageUrls = List<String>.from(widget.currentData['imageUrls']);
     } else if (widget.currentData['image'] != null) {
       _existingImageUrls = [widget.currentData['image']];
     }
 
-    // 3. Music
     _selectedMusicUrl = widget.currentData['musicUrl'];
     _selectedMusicTitle = widget.currentData['musicTitle'];
     _selectedMusicArtist = widget.currentData['musicArtist'];
 
-    // 4. Pre-load music if exists
     if (_selectedMusicUrl != null) {
       _loadMusic();
     }
@@ -84,6 +84,12 @@ class _EditPostPageState extends State<EditPostPage> {
   }
 
   void _setupAudioListeners() {
+    _musicPlayer.positionStream.listen((position) {
+      if (mounted) setState(() => _currentPosition = position);
+    });
+    _musicPlayer.durationStream.listen((duration) {
+      if (mounted && duration != null) setState(() => _totalDuration = duration);
+    });
     _musicPlayer.playerStateStream.listen((state) {
       if (mounted) setState(() => _isPlaying = state.playing);
     });
@@ -109,8 +115,17 @@ class _EditPostPageState extends State<EditPostPage> {
     }
   }
 
+  Future<void> _takePhoto() async {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(source: ImageSource.camera);
+    if (pickedFile != null && mounted) {
+      setState(() => _newImages.add(pickedFile));
+    }
+  }
+
   void _removeExistingImage(int index) {
     setState(() {
+      _imagesToDeleteFromCloud.add(_existingImageUrls[index]); // Mark for deletion
       _existingImageUrls.removeAt(index);
     });
   }
@@ -121,38 +136,11 @@ class _EditPostPageState extends State<EditPostPage> {
     });
   }
 
-  Future<List<String>> _uploadNewImages() async {
-    if (_newImages.isEmpty) return [];
-
-    final List<String> newUrls = [];
-    final cloudinary = CloudinaryPublic(_cloudName, _uploadPreset, cache: false);
-    
-    for (int i = 0; i < _newImages.length; i++) {
-      try {
-        final response = await cloudinary.uploadFile(
-          CloudinaryFile.fromFile(
-            _newImages[i].path,
-            resourceType: CloudinaryResourceType.Image,
-            folder: 'voyage/posts/${widget.postId}',
-            // Use timestamp to avoid overwriting
-            publicId: '${widget.postId}_new_${DateTime.now().millisecondsSinceEpoch}_$i', 
-          ),
-        );
-        newUrls.add(response.secureUrl);
-      } catch (e) {
-        debugPrint('Upload failed for image $i: $e');
-        throw Exception('Failed to upload image');
-      }
-    }
-    return newUrls;
-  }
-
   // --- SAVE LOGIC ---
 
   Future<void> _updatePost() async {
     if (!mounted) return;
 
-    // Validation
     if (_existingImageUrls.isEmpty && _newImages.isEmpty) {
       _showSnackbar('Post must have at least one image', Colors.red);
       return;
@@ -165,32 +153,34 @@ class _EditPostPageState extends State<EditPostPage> {
     setState(() => _isUpdating = true);
 
     try {
-      // 1. Upload NEW images (if any)
+      // 1. Upload NEW images via Service
       List<String> uploadedNewUrls = [];
       if (_newImages.isNotEmpty) {
-        uploadedNewUrls = await _uploadNewImages();
+        uploadedNewUrls = await _storage.uploadImages(_newImages, widget.postId);
       }
 
-      // 2. Combine Old + New URLs
-      final List<String> finalImageUrls = [..._existingImageUrls, ...uploadedNewUrls];
+      // 2. Combine URLs (Set avoids duplicates)
+      final List<String> finalImageUrls = {..._existingImageUrls, ...uploadedNewUrls}.toList();
 
       // 3. Update Firestore
       await FirebaseFirestore.instance.collection('posts').doc(widget.postId).update({
         'location': _locationController.text.trim(),
         'description': _descriptionController.text.trim(),
         'imageUrls': finalImageUrls,
-        // Also update legacy single image field for compatibility
         'image': finalImageUrls.isNotEmpty ? finalImageUrls.first : null,
-        
-        // Music Updates
         'musicUrl': _selectedMusicUrl,
         'musicTitle': _selectedMusicTitle,
         'musicArtist': _selectedMusicArtist,
       });
 
+      // 4. Clean up Cloudinary (Delete removed images)
+      for (String url in _imagesToDeleteFromCloud) {
+        await _storage.deleteImage(url);
+      }
+
       if (mounted) {
         _showSnackbar('Post updated successfully!', Colors.green);
-        Navigator.pop(context); // Go back
+        Navigator.pop(context);
       }
 
     } catch (e) {
@@ -207,7 +197,13 @@ class _EditPostPageState extends State<EditPostPage> {
     );
   }
 
-  // --- MUSIC NAVIGATION ---
+  String _formatDuration(Duration d) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final minutes = twoDigits(d.inMinutes.remainder(60));
+    final seconds = twoDigits(d.inSeconds.remainder(60));
+    return '$minutes:$seconds';
+  }
+
   Future<void> _navigateToMusicSelection() async {
     final result = await Navigator.push(
       context,
@@ -226,25 +222,27 @@ class _EditPostPageState extends State<EditPostPage> {
         await _musicPlayer.setUrl(_selectedMusicUrl!);
         await _musicPlayer.play();
       } catch (e) {
-        debugPrint("Error playing new music: $e");
+        if (mounted) _showSnackbar('Could not play music preview', Colors.orange);
       }
     }
   }
 
-  // --- WIDGET BUILDERS ---
+  // --- UI BUILD ---
 
   @override
   Widget build(BuildContext context) {
+    final currentUser = _auth.currentUser;
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.close, color: Colors.black),
+          icon: const Icon(Icons.arrow_back, color: Colors.black),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text('Edit Post', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+        title: const Text('Edit Post', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 20)),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 16.0),
@@ -263,8 +261,39 @@ class _EditPostPageState extends State<EditPostPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // --- 1. USER PROFILE ROW (Copied from AddPost) ---
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 22,
+                    backgroundImage: currentUser?.photoURL != null
+                        ? NetworkImage(currentUser!.photoURL!)
+                        : const AssetImage('images/boy.jpg') as ImageProvider,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          currentUser?.displayName ?? 'Traveler',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          currentUser?.email ?? 'User',
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              
+              const SizedBox(height: 24),
               _buildImageSection(),
               const SizedBox(height: 24),
+              
               _buildInputSection(
                 icon: Icons.location_on_outlined,
                 title: 'Location',
@@ -272,6 +301,7 @@ class _EditPostPageState extends State<EditPostPage> {
                 controller: _locationController,
               ),
               const SizedBox(height: 20),
+              
               _buildInputSection(
                 icon: Icons.description_outlined,
                 title: 'Description',
@@ -280,9 +310,62 @@ class _EditPostPageState extends State<EditPostPage> {
                 maxLines: 4,
               ),
               const SizedBox(height: 20),
+              
               _buildMusicSection(),
               if (_selectedMusicUrl != null) _buildMiniPlayer(),
               const SizedBox(height: 30),
+
+              // --- 2. BOTTOM BIG BUTTON (Copied from AddPost) ---
+              Column(
+                children: [
+                  if (!_isUpdating)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.cloud_upload, size: 16, color: Colors.grey[600]),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Updating via Cloudinary',
+                            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                          ),
+                        ],
+                      ),
+                    ),
+                  
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton(
+                      onPressed: _isUpdating ? null : _updatePost,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _isUpdating ? Colors.grey : Colors.blue[800],
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: _isUpdating
+                          ? const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                                SizedBox(width: 12),
+                                Text('Updating Voyage...'),
+                              ],
+                            )
+                          : const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.edit_note),
+                                SizedBox(width: 10),
+                                Text('Update Voyage'),
+                              ],
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
             ],
           ),
         ),
@@ -298,39 +381,56 @@ class _EditPostPageState extends State<EditPostPage> {
           children: [
             const Icon(Icons.photo_library, color: Colors.blue),
             const SizedBox(width: 8),
-            Text('Photos', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.grey[800])),
+            Text('Travel Photos', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.grey[800])),
             const SizedBox(width: 8),
             Text('(${_existingImageUrls.length + _newImages.length} total)', style: const TextStyle(fontSize: 14, color: Colors.grey)),
           ],
         ),
         const SizedBox(height: 8),
         
-        // Add Button
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: _pickImages,
-            icon: const Icon(Icons.add_photo_alternate, size: 18),
-            label: const Text('Add More Photos'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue[50],
-              foregroundColor: Colors.blue[800],
-              elevation: 0,
-              padding: const EdgeInsets.symmetric(vertical: 12),
+        // Dual Buttons (Gallery & Camera) - Matched AddPost
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _pickImages,
+                icon: const Icon(Icons.photo_library, size: 18),
+                label: const Text('Gallery'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue[50], 
+                  foregroundColor: Colors.blue[800], 
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), 
+                  padding: const EdgeInsets.symmetric(vertical: 12)
+                ),
+              ),
             ),
-          ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _takePhoto,
+                icon: const Icon(Icons.camera_alt, size: 18),
+                label: const Text('Camera'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green[50], 
+                  foregroundColor: Colors.green[800], 
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), 
+                  padding: const EdgeInsets.symmetric(vertical: 12)
+                ),
+              ),
+            ),
+          ],
         ),
         
         const SizedBox(height: 12),
         
-        // Horizontal Scroll of Images
+        // Image List
         if (_existingImageUrls.isNotEmpty || _newImages.isNotEmpty)
           SizedBox(
             height: 150,
             child: ListView(
               scrollDirection: Axis.horizontal,
               children: [
-                // 1. Existing Images (Network)
+                // Existing (Network)
                 ..._existingImageUrls.asMap().entries.map((entry) {
                   return _buildImagePreview(
                     isNetwork: true,
@@ -338,7 +438,7 @@ class _EditPostPageState extends State<EditPostPage> {
                     onDelete: () => _removeExistingImage(entry.key),
                   );
                 }),
-                // 2. New Images (File)
+                // New (File)
                 ..._newImages.asMap().entries.map((entry) {
                   return _buildImagePreview(
                     isNetwork: false,
@@ -376,7 +476,6 @@ class _EditPostPageState extends State<EditPostPage> {
                     width: 120, height: 150, fit: BoxFit.cover,
                   ),
           ),
-          // Delete Badge
           Positioned(
             top: 6, right: 6,
             child: GestureDetector(
@@ -388,7 +487,6 @@ class _EditPostPageState extends State<EditPostPage> {
               ),
             ),
           ),
-          // "New" Badge
           if (!isNetwork)
              Positioned(
               bottom: 6, right: 6,
@@ -536,7 +634,7 @@ class _EditPostPageState extends State<EditPostPage> {
           Row(
             children: [
               IconButton(
-                icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white),
+                icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white, size: 28),
                 onPressed: () async {
                   if (_isPlaying) await _musicPlayer.pause();
                   else await _musicPlayer.play();
@@ -546,12 +644,57 @@ class _EditPostPageState extends State<EditPostPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(_selectedMusicTitle ?? 'No Title', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold), maxLines: 1),
-                    Text(_selectedMusicArtist ?? '', style: const TextStyle(color: Colors.white70, fontSize: 12), maxLines: 1),
+                    Text(_selectedMusicTitle ?? 'No Title', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis),
+                    const SizedBox(height: 2),
+                    Text(_selectedMusicArtist ?? 'Unknown Artist', style: const TextStyle(color: Colors.white70, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
                   ],
                 ),
               ),
+              IconButton(
+                icon: const Icon(Icons.stop, color: Colors.white, size: 24),
+                onPressed: () async {
+                  await _musicPlayer.stop();
+                  setState(() => _currentPosition = Duration.zero);
+                },
+              ),
             ],
+          ),
+          const SizedBox(height: 8),
+          StreamBuilder<Duration>(
+            stream: _musicPlayer.positionStream,
+            builder: (context, positionSnapshot) {
+              final position = positionSnapshot.data ?? Duration.zero;
+              return StreamBuilder<Duration?>(
+                stream: _musicPlayer.durationStream,
+                builder: (context, durationSnapshot) {
+                  final duration = durationSnapshot.data ?? Duration.zero;
+                  final maxMs = duration.inMilliseconds.toDouble();
+                  final currentMs = position.inMilliseconds.toDouble();
+                  return Column(
+                    children: [
+                      Slider(
+                        min: 0,
+                        max: maxMs > 0 ? maxMs : 1,
+                        value: currentMs.clamp(0, maxMs),
+                        onChanged: (value) async => await _musicPlayer.seek(Duration(milliseconds: value.toInt())),
+                        activeColor: Colors.greenAccent,
+                        inactiveColor: Colors.white24,
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(_formatDuration(position), style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                            Text(_formatDuration(duration), style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
           ),
         ],
       ),
