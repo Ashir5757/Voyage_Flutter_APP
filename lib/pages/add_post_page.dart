@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:just_audio/just_audio.dart';
@@ -6,8 +5,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:tour/pages/music_selection_page.dart';
-import 'package:tour/services/storage_service.dart'; // Import the service
+import 'package:tour/services/storage_service.dart';
 import 'package:uuid/uuid.dart';
+
+// Import the new widget
+import 'package:tour/widgets/media_picker_section.dart';
 
 class AddPostPage extends StatefulWidget {
   const AddPostPage({super.key});
@@ -17,20 +19,20 @@ class AddPostPage extends StatefulWidget {
 }
 
 class _AddPostPageState extends State<AddPostPage> {
-  // --- SECURE STORAGE SERVICE ---
   final StorageService _storage = CloudinaryStorageService();
 
   final TextEditingController _locationController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
   
-  final List<XFile> _selectedImages = [];
+  // This list holds the data, but the Logic/UI is now in the separate file
+  List<XFile> _selectedImages = []; 
+  
   bool _isUploading = false;
   
   String? _selectedMusicUrl;
   String? _selectedMusicTitle;
   String? _selectedMusicArtist;
   
-  // Audio player
   final AudioPlayer _musicPlayer = AudioPlayer();
   Duration _currentPosition = Duration.zero;
   Duration _totalDuration = Duration.zero;
@@ -68,35 +70,13 @@ class _AddPostPageState extends State<AddPostPage> {
     super.dispose();
   }
 
-  Future<void> _pickImages() async {
-    final picker = ImagePicker();
-    final pickedFiles = await picker.pickMultiImage();
-    if (pickedFiles.isNotEmpty && mounted) {
-      setState(() {
-        _selectedImages.addAll(pickedFiles);
-      });
-    }
-  }
-
-  Future<void> _takePhoto() async {
-    final picker = ImagePicker();
-    final pickedFile = await picker.pickImage(source: ImageSource.camera);
-    if (pickedFile != null && mounted) {
-      setState(() => _selectedImages.add(pickedFile));
-    }
-  }
-
-  void _removeImage(int index) {
-    if (mounted) setState(() => _selectedImages.removeAt(index));
-  }
-
   // --- MAIN UPLOAD FUNCTION ---
   Future<void> _uploadPost() async {
     if (!mounted) return;
     
     // Validation
     if (_selectedImages.isEmpty) {
-      _showSnackbar('Please select at least one image', Colors.red);
+      _showSnackbar('Please select at least one image/video', Colors.red);
       return;
     }
     if (_locationController.text.isEmpty) {
@@ -113,25 +93,22 @@ class _AddPostPageState extends State<AddPostPage> {
     if (mounted) setState(() => _isUploading = true);
 
     try {
-      print('=== Starting secure upload ===');
-      
       final postId = _uuid.v4();
       final timestamp = DateTime.now();
       final formattedDate = DateFormat('yyyy-MM-dd – HH:mm').format(timestamp);
       
-      // Get user info
       DocumentSnapshot userDoc = await _firestore.collection('users').doc(currentUser.uid).get();
       String userName = (userDoc.exists && userDoc.data() != null)
           ? (userDoc.data() as Map<String, dynamic>)['name'] ?? currentUser.displayName ?? 'Anonymous'
           : currentUser.displayName ?? 'Anonymous';
 
-      // 1. UPLOAD IMAGES (Using Secure Service)
+      // 1. UPLOAD IMAGES
       final List<String> imageUrls;
       try {
         imageUrls = await _storage.uploadImages(_selectedImages, postId);
       } catch (e) {
         if (mounted) {
-          _showSnackbar('Failed to upload images: $e', Colors.red);
+          _showSnackbar('Failed to upload media: $e', Colors.red);
           setState(() => _isUploading = false);
         }
         return;
@@ -146,7 +123,7 @@ class _AddPostPageState extends State<AddPostPage> {
         'userPhoto': currentUser.photoURL ?? '',
         'location': _locationController.text.trim(),
         'description': _descriptionController.text.trim(),
-        'imageUrls': imageUrls.toSet().toList(), // Remove duplicates
+        'imageUrls': imageUrls.toSet().toList(),
         'musicUrl': _selectedMusicUrl,
         'musicTitle': _selectedMusicTitle,
         'musicArtist': _selectedMusicArtist,
@@ -175,7 +152,6 @@ class _AddPostPageState extends State<AddPostPage> {
       }
 
     } catch (e) {
-      print('Upload error: $e');
       if (mounted) _showSnackbar('Upload failed. Please try again.', Colors.red);
     } finally {
       if (mounted) setState(() => _isUploading = false);
@@ -199,11 +175,10 @@ class _AddPostPageState extends State<AddPostPage> {
 
   void _showSnackbar(String message, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: color, duration: const Duration(seconds: 3)),
+      SnackBar(content: Text(message), backgroundColor: color),
     );
   }
 
-  // --- HELPER FUNCTION FOR TIME FORMATTING ---
   String _formatDuration(Duration d) {
     String twoDigits(int n) => n.toString().padLeft(2, '0');
     final minutes = twoDigits(d.inMinutes.remainder(60));
@@ -287,19 +262,30 @@ class _AddPostPageState extends State<AddPostPage> {
                 ],
               ),
               const SizedBox(height: 24),
-              _buildImageSection(),
+              
+              // --- HERE IS YOUR NEW SEPARATE COMPONENT ---
+              MediaPickerSection(
+                selectedImages: _selectedImages,
+                onImagesChanged: (updatedList) {
+                  setState(() {
+                    _selectedImages = updatedList;
+                  });
+                },
+              ),
+              // -------------------------------------------
+              
               const SizedBox(height: 24),
               _buildInputSection(
                 icon: Icons.location_on_outlined,
                 title: 'Location',
-                hint: 'Where did you travel? (e.g., Paris, France)',
+                hint: 'Where did you travel?',
                 controller: _locationController,
               ),
               const SizedBox(height: 20),
               _buildInputSection(
                 icon: Icons.description_outlined,
                 title: 'Description',
-                hint: 'Share your travel experience...',
+                hint: 'Share your experience...',
                 controller: _descriptionController,
                 maxLines: 4,
               ),
@@ -339,7 +325,7 @@ class _AddPostPageState extends State<AddPostPage> {
                               children: [
                                 SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
                                 SizedBox(width: 12),
-                                Text('Uploading to Cloudinary...'),
+                                Text('Uploading...'),
                               ],
                             )
                           : const Row(
@@ -362,99 +348,8 @@ class _AddPostPageState extends State<AddPostPage> {
     );
   }
 
-  Widget _buildImageSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.photo_library, color: Colors.blue),
-            const SizedBox(width: 8),
-            Text('Travel Photos', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.grey[800])),
-            const SizedBox(width: 8),
-            Text('(${_selectedImages.length} selected)', style: const TextStyle(fontSize: 14, color: Colors.grey)),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: _pickImages,
-                icon: const Icon(Icons.photo_library, size: 18),
-                label: const Text('Add from Gallery'),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue[50], foregroundColor: Colors.blue[800], shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), padding: const EdgeInsets.symmetric(vertical: 12)),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: _takePhoto,
-                icon: const Icon(Icons.camera_alt, size: 18),
-                label: const Text('Take Photo'),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.green[50], foregroundColor: Colors.green[800], shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), padding: const EdgeInsets.symmetric(vertical: 12)),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        if (_selectedImages.isNotEmpty) ...[
-          const Text('Tap X to remove', style: TextStyle(fontSize: 12, color: Colors.grey)),
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 150,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: _selectedImages.length,
-              itemBuilder: (context, index) => _buildImagePreview(index),
-            ),
-          ),
-        ] else ...[
-          Container(
-            width: double.infinity,
-            height: 150,
-            decoration: BoxDecoration(color: Colors.grey[50], borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey[300]!)),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.photo_library, size: 48, color: Colors.grey[400]),
-                const SizedBox(height: 12),
-                const Text('Add your travel photos', style: TextStyle(fontSize: 14, color: Colors.grey)),
-                const Text('Select multiple images', style: TextStyle(fontSize: 12, color: Colors.grey)),
-              ],
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildImagePreview(int index) {
-    return Container(
-      width: 120,
-      margin: const EdgeInsets.only(right: 8),
-      child: Stack(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.file(File(_selectedImages[index].path), width: 120, height: 150, fit: BoxFit.cover),
-          ),
-          Positioned(
-            top: 8, right: 8,
-            child: GestureDetector(
-              onTap: () => _removeImage(index),
-              child: Container(
-                padding: const EdgeInsets.all(4),
-                decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
-                child: const Icon(Icons.close, size: 16, color: Colors.white),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
+  // ... (Keep _buildInputSection, _buildMusicSection, _buildMiniPlayer below)
+  
   Widget _buildInputSection({required IconData icon, required String title, required String hint, required TextEditingController controller, int maxLines = 1}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

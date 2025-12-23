@@ -243,11 +243,11 @@ class _HomeContentState extends State<HomeContent> {
                   post: post,
                   postId: doc.id,
                   onLikeChanged: () {},
-                  onCommentPressed: () {
-                     if (widget.controller.currentUser == null) {
-                        widget.controller.showLoginPrompt(context, action: 'Commenting');
-                     }
-                  },
+                  // onCommentPressed: () {
+                  //    if (widget.controller.currentUser == null) {
+                  //       widget.controller.showLoginPrompt(context, action: 'Commenting');
+                  //    }
+                  // },
                 ),
               );
             },

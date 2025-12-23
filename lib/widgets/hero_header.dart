@@ -5,52 +5,57 @@ class HeroHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 400, 
-      width: double.infinity,
-      child: Stack(
-        children: [
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)],
+    // 1. We remove the fixed height (SizedBox).
+    // 2. We use StackFit.expand so it fills the FlexibleSpaceBar area completely.
+    return Stack(
+      fit: StackFit.expand, 
+      children: [
+        // Background Gradient
+        Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)],
+            ),
+          ),
+        ),
+        
+        // Decorative Circles (Background elements)
+        Positioned(
+          top: -100, right: -100,
+          child: Container(
+            width: 300, height: 300,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withOpacity(0.05)),
+          ),
+        ),
+        Positioned(
+          top: 100, left: -50,
+          child: Container(
+            width: 200, height: 200,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withOpacity(0.03)),
+          ),
+        ),
+        Positioned(
+          bottom: -50, right: -20,
+          child: Container(
+            width: 150, height: 150,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(
+                colors: [Colors.tealAccent.withOpacity(0.2), Colors.transparent],
               ),
             ),
           ),
-          Positioned(
-            top: -100,
-            right: -100,
-            child: Container(
-              width: 300, height: 300,
-              decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withOpacity(0.05)),
-            ),
-          ),
-          Positioned(
-            top: 100, left: -50,
-            child: Container(
-              width: 200, height: 200,
-              decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withOpacity(0.03)),
-            ),
-          ),
-          Positioned(
-            bottom: -50, right: -20,
-            child: Container(
-              width: 150, height: 150,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  colors: [Colors.tealAccent.withOpacity(0.2), Colors.transparent],
-                ),
-              ),
-            ),
-          ),
-          Container(
+        ),
+        
+        // Text Content - Aligned to bottom-left so it stays visible longer
+        Align(
+          alignment: Alignment.bottomLeft,
+          child: Padding(
             padding: const EdgeInsets.only(bottom: 60, left: 24, right: 24),
-            width: double.infinity,
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.end,
+              mainAxisSize: MainAxisSize.min, // Important: Wraps content height
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Icon(Icons.travel_explore, color: Colors.tealAccent, size: 40),
@@ -72,8 +77,8 @@ class HeroHeader extends StatelessWidget {
               ],
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

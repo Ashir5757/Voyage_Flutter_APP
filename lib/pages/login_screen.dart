@@ -1,3 +1,4 @@
+import 'dart:async'; 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -19,18 +20,43 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _statusMessage;
   bool _isSuccess = false;
   bool _isSubmitting = false;
+  
+  Timer? _statusTimer;
 
   @override
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _statusTimer?.cancel();
     super.dispose();
   }
 
-  // --- LOGIC SECTION (UPDATED) ---
+  // --- LOGIC SECTION ---
 
   void _handleNavigation() {
-    Navigator.pushReplacementNamed(context, '/');
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) Navigator.pushReplacementNamed(context, '/');
+    });
+  }
+
+  void _showStatus(String message, {bool isSuccess = false}) {
+    _statusTimer?.cancel();
+    
+    if (mounted) {
+      setState(() {
+        _statusMessage = message;
+        _isSuccess = isSuccess;
+        _isSubmitting = false; 
+      });
+    }
+
+    _statusTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() {
+          _statusMessage = null;
+        });
+      }
+    });
   }
 
   Future<void> _login() async {
@@ -42,56 +68,31 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      // 1. Sign in the user
       await Provider.of<AuthService>(context, listen: false).signInWithEmail(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
-      // 2. Get the current user instance
       User? user = FirebaseAuth.instance.currentUser;
       
+      // ✅ CHECK IF VERIFIED
       if (user != null && !user.emailVerified) {
-        // --- THE "NEW EMAIL" LOGIC ---
+        await FirebaseAuth.instance.signOut(); // Log them out immediately
         
-        // We sign them out because they aren't verified
-        await FirebaseAuth.instance.signOut();
-        
-        if (mounted) {
-          setState(() {
-            _isSuccess = false;
-            _isSubmitting = false;
-            _statusMessage = "Email not verified. Please check your inbox.";
-          });
+        _showStatus("Email not verified. Check your inbox.");
 
-          // Show a SnackBar with a "Resend" button
+        if (mounted) {
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: const Text("Need a new verification link?"),
-              backgroundColor: Colors.black,
-              duration: const Duration(seconds: 5),
+              backgroundColor: Colors.black87,
+              // 👇 THIS IS THE FIX (3 Seconds)
+              duration: const Duration(seconds: 3), 
               action: SnackBarAction(
                 label: "RESEND",
-                textColor: Colors.deepPurpleAccent,
-                onPressed: () async {
-                  // To resend, we briefly sign in again just to trigger the email
-                  try {
-                    UserCredential cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
-                      email: _emailController.text.trim(),
-                      password: _passwordController.text.trim(),
-                    );
-                    await cred.user!.sendEmailVerification();
-                    await FirebaseAuth.instance.signOut(); // Sign back out
-                    
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text("New link sent! Please check your email."))
-                      );
-                    }
-                  } catch (e) {
-                    debugPrint("Resend failed: $e");
-                  }
-                },
+                textColor: Colors.blueAccent,
+                onPressed: _resendVerificationEmail,
               ),
             ),
           );
@@ -99,21 +100,39 @@ class _LoginScreenState extends State<LoginScreen> {
         return; 
       }
       
-      // ✅ If verified, proceed to Home
+      _showStatus("Login Successful!", isSuccess: true);
+      _handleNavigation();
+
+    } catch (e) {
+      String errorMsg = e.toString().replaceAll('Exception:', '').trim();
+      _showStatus(errorMsg);
+    }
+  }
+
+  Future<void> _resendVerificationEmail() async {
+    try {
+      UserCredential cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
+      
+      await cred.user!.sendEmailVerification();
+      await FirebaseAuth.instance.signOut();
+      
       if (mounted) {
-        setState(() {
-          _isSuccess = true;
-          _statusMessage = "Login Successful!";
-        });
-        _handleNavigation();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("New link sent! Please check your email."),
+            duration: Duration(seconds: 3), 
+            backgroundColor: Colors.green,
+          )
+        );
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isSuccess = false;
-          _statusMessage = e.toString().replaceAll('Exception:', '');
-          _isSubmitting = false;
-        });
+      if(mounted) {
+         ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Failed to resend link. Try again later."))
+        );
       }
     }
   }
@@ -126,29 +145,14 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       await Provider.of<AuthService>(context, listen: false).signInWithGoogle();
-      
-      // Google accounts are auto-verified, so we don't strictly need to check, 
-      // but you can add the same check here if you want to be safe.
-      
-      if (mounted) {
-        setState(() {
-          _isSuccess = true;
-          _statusMessage = "Google Sign-In Successful!";
-        });
-        _handleNavigation();
-      }
+      _showStatus("Google Sign-In Successful!", isSuccess: true);
+      _handleNavigation();
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isSuccess = false;
-          _statusMessage = "Google Sign-In failed: ${e.toString()}";
-          _isSubmitting = false;
-        });
-      }
+      _showStatus("Google Sign-In failed.");
     }
   }
 
-  // --- UI SECTION (SAME AS BEFORE) ---
+  // --- UI SECTION ---
 
   @override
   Widget build(BuildContext context) {
@@ -184,7 +188,13 @@ class _LoginScreenState extends State<LoginScreen> {
                   const Text("Sign in to continue", style: TextStyle(fontSize: 16, color: Colors.grey)),
                   const SizedBox(height: 40),
 
-                  if (_statusMessage != null) _buildStatusBanner(),
+                  AnimatedOpacity(
+                    opacity: _statusMessage != null ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 300),
+                    child: _statusMessage != null 
+                        ? _buildStatusBanner() 
+                        : const SizedBox(height: 0),
+                  ),
 
                   Form(
                     key: _formKey,
@@ -228,7 +238,7 @@ class _LoginScreenState extends State<LoginScreen> {
         border: Border.all(color: _isSuccess ? Colors.black : Colors.red.shade200),
       ),
       child: Text(
-        _statusMessage!,
+        _statusMessage ?? "",
         style: TextStyle(color: _isSuccess ? Colors.white : Colors.red.shade800, fontWeight: FontWeight.w500),
         textAlign: TextAlign.center,
       ),

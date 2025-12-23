@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart'; // Needed for AppLifecycleState
+import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:audio_session/audio_session.dart'; // 1. Import Audio Session
 
-// 1. Add "with WidgetsBindingObserver"
 class AudioService extends ChangeNotifier with WidgetsBindingObserver {
   final AudioPlayer _player = AudioPlayer();
   String? _currentPostId;
@@ -14,20 +14,49 @@ class AudioService extends ChangeNotifier with WidgetsBindingObserver {
   bool get isLoading => _isLoading;
 
   AudioService() {
-    // 2. Register this service to listen to App Lifecycle events
     WidgetsBinding.instance.addObserver(this);
+    _initAudioSession(); // 2. Initialize Session
     _setupListeners();
   }
 
-  // 3. This function runs automatically when the App is minimized/closed
+  // 3. OPTIMIZATION: Configure System Audio
+  // This ensures your app interacts correctly with Spotify, Phone Calls, etc.
+  Future<void> _initAudioSession() async {
+    final session = await AudioSession.instance;
+    await session.configure(const AudioSessionConfiguration.music());
+    
+    // Handle unplugging headphones (Stop music)
+    session.interruptionEventStream.listen((event) {
+      if (event.begin) {
+        switch (event.type) {
+          case AudioInterruptionType.duck:
+            _player.setVolume(0.5); // Lower volume for notification
+            break;
+          case AudioInterruptionType.pause:
+          case AudioInterruptionType.unknown:
+            stop(); // Stop for phone call
+            break;
+        }
+      } else {
+        switch (event.type) {
+          case AudioInterruptionType.duck:
+            _player.setVolume(1.0); // Restore volume
+            break;
+          case AudioInterruptionType.pause:
+            // Do not auto-resume (standard UX)
+            break;
+          case AudioInterruptionType.unknown:
+            break;
+        }
+      }
+    });
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    
-    // If the app goes to background (paused) or is closed (detached)
     if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
-      debugPrint("App backgrounded: Auto-stopping music.");
-      stop(); // Stop the music immediately
+      stop(); 
     }
   }
 
@@ -36,16 +65,19 @@ class AudioService extends ChangeNotifier with WidgetsBindingObserver {
       final wasPlaying = _isPlaying;
       _isPlaying = state.playing;
       
-      // Update loading state
       _isLoading = state.processingState == ProcessingState.loading ||
                    state.processingState == ProcessingState.buffering;
       
-      if (wasPlaying != _isPlaying || state.processingState == ProcessingState.loading) {
+      if (wasPlaying != _isPlaying || _isLoading) {
         notifyListeners();
+      }
+      
+      // Auto-stop when song finishes
+      if (state.processingState == ProcessingState.completed) {
+        stop();
       }
     });
 
-    // Handle errors
     _player.playbackEventStream.listen((event) {}, onError: (error) {
       debugPrint('Audio error: $error');
       _isLoading = false;
@@ -55,6 +87,7 @@ class AudioService extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> play(String url, String postId, {bool forceRestart = false}) async {
     try {
+      // A. If same song is paused, just resume (Instant)
       if (_currentPostId == postId && !forceRestart) {
         if (!_isPlaying) {
           await _player.play();
@@ -62,81 +95,68 @@ class AudioService extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
 
+      // B. Stop previous song cleanly
       if (_currentPostId != null && _currentPostId != postId) {
-        await stop();
+        await _player.stop(); // Don't call stop() to avoid notifying listeners twice unnecessarily
       }
 
       _currentPostId = postId;
       _isLoading = true;
       notifyListeners();
 
-      await _player.setUrl(url);
-      await _player.play();
+      // 4. THE ULTIMATE OPTIMIZATION: Caching
+      // Instead of setUrl, we use LockCachingAudioSource.
+      // This downloads the MP3 to a temp file while playing. 
+      // Next time you play it? INSTANT load from disk.
+      
+      // Note: We handle Cloudinary optimization here too if needed, 
+      // but usually audio files don't need resizing like images.
+      
+      try {
+        final audioSource = LockCachingAudioSource(Uri.parse(url));
+        await _player.setAudioSource(audioSource);
+        await _player.play();
+      } catch (e) {
+         // Fallback to standard stream if caching fails (e.g. storage permission issue)
+         debugPrint("Caching failed, falling back to stream: $e");
+         await _player.setUrl(url);
+         await _player.play();
+      }
       
     } catch (e) {
       debugPrint('Error playing audio: $e');
       _isLoading = false;
       _currentPostId = null;
       notifyListeners();
-      // Only rethrow if you want to handle it in UI, otherwise just logging is safer
     }
   }
 
   Future<void> pause() async {
-    try {
-      await _player.pause();
-      notifyListeners();
-    } catch (e) {
-      debugPrint('Error pausing audio: $e');
-    }
+    await _player.pause();
+    notifyListeners();
   }
 
   Future<void> stop() async {
-    try {
-      await _player.stop();
-      _currentPostId = null;
-      _isPlaying = false;
-      _isLoading = false;
-      notifyListeners();
-    } catch (e) {
-      debugPrint('Error stopping audio: $e');
-    }
+    await _player.stop();
+    await _player.seek(Duration.zero); // Reset position
+    _currentPostId = null;
+    _isPlaying = false;
+    _isLoading = false;
+    notifyListeners();
   }
 
   Future<void> togglePlayPause(String postId) async {
-    if (_currentPostId != postId) {
-      return;
-    }
+    if (_currentPostId != postId) return;
 
-    try {
-      if (_isPlaying) {
-        await pause();
-      } else {
-        await _player.play();
-      }
-      notifyListeners();
-    } catch (e) {
-      debugPrint('Error toggling play/pause: $e');
+    if (_isPlaying) {
+      await pause();
+    } else {
+      await _player.play();
     }
-  }
-
-  static Future<String?> getJamendoDirectUrl(String jamendoUrl) async {
-    try {
-      final uri = Uri.parse(jamendoUrl);
-      final trackId = uri.queryParameters['trackid'];
-      
-      if (trackId != null) {
-        return 'https://prod-1.storage.jamendo.com/download/track/$trackId/mp31/';
-      }
-    } catch (e) {
-      debugPrint('Error parsing Jamendo URL: $e');
-    }
-    return null;
   }
 
   @override
   void dispose() {
-    // 4. Clean up the observer when the service is destroyed
     WidgetsBinding.instance.removeObserver(this);
     _player.dispose();
     super.dispose();

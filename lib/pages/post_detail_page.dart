@@ -73,7 +73,7 @@ class PostDetailPage extends StatelessWidget {
                 postId: postId,
                 // We pass empty functions because we are just viewing
                 onLikeChanged: () {}, 
-                onCommentPressed: () {},
+                // onCommentPressed: () {},
               ),
             );
           },

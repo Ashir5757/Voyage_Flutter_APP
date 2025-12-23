@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:ui'; // For ImageFilter
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -11,7 +10,7 @@ import 'package:tour/services/audio_service.dart';
 import 'package:tour/pages/my_posts_page.dart';
 import 'package:tour/pages/post_detail_page.dart';
 import 'package:tour/controllers/home_controller.dart';
-import 'package:tour/widgets/guest_view.dart'; // Needed for navigation logic
+import 'package:tour/widgets/guest_view.dart';
 
 class UserProfilePage extends StatefulWidget {
   const UserProfilePage({super.key});
@@ -33,58 +32,68 @@ class _UserProfilePageState extends State<UserProfilePage> {
   String _displayName = '';
   String _bio = '';
   String _photoUrl = '';
-  int _postsCount = 0;
   
-  bool _isLoading = true;
+  late Stream<QuerySnapshot> _postsStream;
+  
+  bool _isLoadingUserData = true;
   bool _isUploading = false;
   
-  // Cloudinary Config
   final String _cloudName = 'dseozz7gs'; 
   final String _uploadPreset = 'voyage_profile_upload';
 
   @override
   void initState() {
     super.initState();
+    _currentUser = _auth.currentUser;
+
+    if (_currentUser != null) {
+      _displayName = _currentUser!.displayName ?? 'Traveler';
+      _photoUrl = _currentUser!.photoURL ?? '';
+      
+      _postsStream = _firestore
+          .collection('posts')
+          .where('userId', isEqualTo: _currentUser!.uid)
+          .orderBy('createdAt', descending: true)
+          .snapshots();
+    } else {
+      _postsStream = const Stream.empty();
+    }
+
     _loadUserData();
   }
 
   Future<void> _loadUserData() async {
-    setState(() => _isLoading = true);
-    final user = _auth.currentUser;
-    
-    if (user != null) {
-      _currentUser = user;
-      _displayName = user.displayName ?? 'Traveler';
-      _photoUrl = user.photoURL ?? '';
-      
-      try {
-        final userDoc = await _firestore.collection('users').doc(user.uid).get();
-        if (userDoc.exists) {
-          final data = userDoc.data()!;
-          if (mounted) {
-            setState(() {
-              _displayName = data['displayName'] as String? ?? _displayName;
-              _bio = data['bio'] as String? ?? '';
-              _postsCount = data['postsCount'] as int? ?? 0;
-              
-              final cloudinaryUrl = data['cloudinaryPhotoUrl'] as String?;
-              if (cloudinaryUrl != null && cloudinaryUrl.isNotEmpty) {
-                _photoUrl = cloudinaryUrl;
-              }
-            });
-            _nameController.text = _displayName;
-            _bioController.text = _bio;
-          }
-        }
-      } catch (e) {
-        debugPrint("Error loading user data: $e");
-      }
+    if (_currentUser == null) {
+      if (mounted) setState(() => _isLoadingUserData = false);
+      return;
     }
-    if (mounted) setState(() => _isLoading = false);
+    try {
+      final userDoc = await _firestore.collection('users').doc(_currentUser!.uid).get();
+      if (userDoc.exists) {
+        final data = userDoc.data()!;
+        if (mounted) {
+          setState(() {
+            _displayName = data['displayName'] as String? ?? _displayName;
+            _bio = data['bio'] as String? ?? '';
+            
+            final cloudinaryUrl = data['cloudinaryPhotoUrl'] as String?;
+            if (cloudinaryUrl != null && cloudinaryUrl.isNotEmpty) {
+              _photoUrl = cloudinaryUrl;
+            }
+          });
+          _nameController.text = _displayName;
+          _bioController.text = _bio;
+        }
+      }
+    } catch (e) {
+      debugPrint("Error loading user data: $e");
+    } finally {
+      if (mounted) setState(() => _isLoadingUserData = false);
+    }
   }
 
   // --- ACTIONS ---
-
+  
   Future<void> _pickImage() async {
     showModalBottomSheet(
       context: context,
@@ -101,11 +110,7 @@ class _UserProfilePageState extends State<UserProfilePage> {
             Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2))),
             const SizedBox(height: 20),
             ListTile(
-              leading: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: Colors.purple[50], shape: BoxShape.circle),
-                child: const Icon(Icons.camera_alt, color: Colors.purple),
-              ),
+              leading: Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.purple[50], shape: BoxShape.circle), child: const Icon(Icons.camera_alt, color: Colors.purple)),
               title: const Text('Take Photo', style: TextStyle(fontWeight: FontWeight.w600)),
               onTap: () async {
                 Navigator.pop(context);
@@ -114,11 +119,7 @@ class _UserProfilePageState extends State<UserProfilePage> {
               },
             ),
             ListTile(
-              leading: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: Colors.blue[50], shape: BoxShape.circle),
-                child: const Icon(Icons.photo_library, color: Colors.blue),
-              ),
+              leading: Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.blue[50], shape: BoxShape.circle), child: const Icon(Icons.photo_library, color: Colors.blue)),
               title: const Text('Choose from Gallery', style: TextStyle(fontWeight: FontWeight.w600)),
               onTap: () async {
                 Navigator.pop(context);
@@ -142,17 +143,14 @@ class _UserProfilePageState extends State<UserProfilePage> {
         CloudinaryFile.fromFile(image.path, resourceType: CloudinaryResourceType.Image, folder: 'voyage/profiles', publicId: 'profile_${_currentUser!.uid}'),
       );
       final imageUrl = response.secureUrl;
-      
       await _currentUser!.updatePhotoURL(imageUrl);
       await _firestore.collection('users').doc(_currentUser!.uid).set({
         'cloudinaryPhotoUrl': imageUrl,
         'photoURL': imageUrl,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
-      
       await _currentUser!.reload();
       if (mounted) setState(() { _photoUrl = imageUrl; });
-      
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profile picture updated!'), backgroundColor: Colors.green));
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Upload failed: $e'), backgroundColor: Colors.red));
@@ -166,20 +164,16 @@ class _UserProfilePageState extends State<UserProfilePage> {
     try {
       final newName = _nameController.text.trim();
       final newBio = _bioController.text.trim();
-      
       if (newName.isEmpty) {
          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Name cannot be empty'), backgroundColor: Colors.red));
          return;
       }
-
       await _firestore.collection('users').doc(_currentUser!.uid).set({
         'displayName': newName,
         'bio': newBio,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
-      
       await _currentUser!.updateDisplayName(newName);
-      
       if (mounted) {
         setState(() {
           _displayName = newName;
@@ -195,104 +189,90 @@ class _UserProfilePageState extends State<UserProfilePage> {
 
   void _showEditProfileModal() {
     showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
+      context: context, 
+      isScrollControlled: true, 
       backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.85, // Tall modal
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom + 20, 
-          left: 20, right: 20, top: 20
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('Edit Profile', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
-              ],
-            ),
-            const Divider(),
-            const SizedBox(height: 20),
-            
-            // Name Field
-            const Text("Display Name", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.grey)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _nameController,
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: Colors.grey[50],
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-              ),
-            ),
-            const SizedBox(height: 20),
-            
-            // Bio Field
-            const Text("Bio", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.grey)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _bioController,
-              maxLines: 4,
-              maxLength: 150,
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: Colors.grey[50],
-                hintText: "Write something about yourself...",
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-              ),
-            ),
-            
-            const Spacer(),
-            SizedBox(
-              width: double.infinity,
-              height: 50,
-              child: ElevatedButton(
-                onPressed: _updateProfileInfo,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.black,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  elevation: 0,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: Container(
+          height: MediaQuery.of(context).size.height * 0.85,
+          decoration: const BoxDecoration(
+            color: Colors.white, 
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20))
+          ),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(left: 20, right: 20, top: 20, bottom: 10),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween, 
+                  children: [
+                    const Text('Edit Profile', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                    IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+                  ]
                 ),
-                child: const Text('Save Changes', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               ),
-            ),
-          ],
+              const Divider(height: 1),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("Display Name", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.grey)), 
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _nameController, 
+                        decoration: InputDecoration(filled: true, fillColor: Colors.grey[50], border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none))
+                      ),
+                      const SizedBox(height: 20),
+                      const Text("Bio", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.grey)), 
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _bioController, 
+                        maxLines: 4, 
+                        maxLength: 150, 
+                        decoration: InputDecoration(filled: true, fillColor: Colors.grey[50], hintText: "Write something about yourself...", border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none))
+                      ),
+                      const SizedBox(height: 30),
+                      SizedBox(
+                        width: double.infinity, 
+                        height: 50, 
+                        child: ElevatedButton(
+                          onPressed: _updateProfileInfo, 
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 0), 
+                          child: const Text('Save Changes', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
+                        )
+                      ),
+                      const SizedBox(height: 20),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  // --- BUILDERS ---
-
   @override
   Widget build(BuildContext context) {
-    // 1. Loading State
-    if (_isLoading) {
+    if (_isLoadingUserData) {
       return const Scaffold(
         backgroundColor: Colors.white,
-        body: Center(child: CircularProgressIndicator()),
+        body: Center(child: CircularProgressIndicator(color: Colors.black)),
       );
     }
 
-    // 2. Guest View (Professional Looking)
-   if (_currentUser == null) {
+    if (_currentUser == null) {
       return GuestView(
         title: "Join Voyage",
-        message: "Create your profile to start sharing your travel moments with the world.",
-        onLoginPressed: () {
-           Provider.of<HomeController>(context, listen: false).navigateToLogin(context);
-        },
+        message: "Create your profile to start sharing your travel moments.",
+        onLoginPressed: () => Provider.of<HomeController>(context, listen: false).navigateToLogin(context),
       );
     }
 
-    // 3. User View
     return PopScope(
       canPop: false, 
       onPopInvoked: (didPop) async {
@@ -303,43 +283,13 @@ class _UserProfilePageState extends State<UserProfilePage> {
       child: Scaffold(
         backgroundColor: Colors.white,
         appBar: AppBar(
-          backgroundColor: Colors.white,
-          elevation: 0,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 20),
-            onPressed: () {
-               Provider.of<AudioService>(context, listen: false).stop();
-               Navigator.pop(context);
-            },
-          ),
-          centerTitle: true,
-          title: const Text('My Profile', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
+          backgroundColor: Colors.white, elevation: 0,
+          leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 20), onPressed: () { Provider.of<AudioService>(context, listen: false).stop(); Navigator.pop(context); }),
+          centerTitle: true, title: const Text('My Profile', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
           actions: [
-             IconButton(
-              icon: const Icon(Icons.logout, color: Colors.red),
-              onPressed: () {
-                 // Show confirmation
-                 showDialog(
-                   context: context, 
-                   builder: (c) => AlertDialog(
-                     title: const Text("Log Out"),
-                     content: const Text("Are you sure you want to log out?"),
-                     actions: [
-                       TextButton(onPressed: () => Navigator.pop(c), child: const Text("Cancel")),
-                       TextButton(
-                         onPressed: () async {
-                            Navigator.pop(c); // Close dialog
-                            Provider.of<AudioService>(context, listen: false).stop();
-                            await _auth.signOut();
-                            if (context.mounted) Navigator.of(context).popUntil((route) => route.isFirst);
-                         }, 
-                         child: const Text("Log Out", style: TextStyle(color: Colors.red))
-                       ),
-                     ],
-                   )
-                 );
-              },
-            ),
+             IconButton(icon: const Icon(Icons.logout, color: Colors.red), onPressed: () {
+                 showDialog(context: context, builder: (c) => AlertDialog(title: const Text("Log Out"), content: const Text("Are you sure you want to log out?"), actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text("Cancel")), TextButton(onPressed: () async { Navigator.pop(c); Provider.of<AudioService>(context, listen: false).stop(); await _auth.signOut(); if (context.mounted) Navigator.of(context).popUntil((route) => route.isFirst); }, child: const Text("Log Out", style: TextStyle(color: Colors.red)))]));
+              }),
           ],
         ),
         body: Stack(
@@ -347,249 +297,192 @@ class _UserProfilePageState extends State<UserProfilePage> {
             CustomScrollView(
               physics: const BouncingScrollPhysics(),
               slivers: [
+                // 1. TOP PROFILE INFO
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 20),
                     child: Column(
                       children: [
                         const SizedBox(height: 20),
-                        // Profile Avatar
                         GestureDetector(
                           onTap: _pickImage,
-                          child: Stack(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(3),
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.grey[300]!, width: 1),
-                                ),
-                                child: CircleAvatar(
-                                  radius: 50,
-                                  backgroundColor: Colors.grey[100],
-                                  backgroundImage: _photoUrl.isNotEmpty ? CachedNetworkImageProvider(_photoUrl) : null,
-                                  child: _photoUrl.isEmpty ? const Icon(Icons.person, size: 50, color: Colors.grey) : null,
-                                ),
-                              ),
-                              Positioned(
-                                bottom: 0, right: 0,
-                                child: Container(
-                                  padding: const EdgeInsets.all(6),
-                                  decoration: BoxDecoration(
-                                    color: Colors.blueAccent,
-                                    shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.white, width: 2),
-                                  ),
-                                  child: const Icon(Icons.edit, size: 12, color: Colors.white),
-                                ),
-                              ),
-                            ],
-                          ),
+                          child: Stack(children: [
+                              Container(padding: const EdgeInsets.all(3), decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.grey[300]!, width: 1)), child: CircleAvatar(radius: 50, backgroundColor: Colors.grey[100], backgroundImage: _photoUrl.isNotEmpty ? CachedNetworkImageProvider(_photoUrl) : null, child: _photoUrl.isEmpty ? const Icon(Icons.person, size: 50, color: Colors.grey) : null)),
+                              Positioned(bottom: 0, right: 0, child: Container(padding: const EdgeInsets.all(6), decoration: BoxDecoration(color: Colors.blueAccent, shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)), child: const Icon(Icons.edit, size: 12, color: Colors.white))),
+                          ]),
                         ),
                         const SizedBox(height: 16),
-                        
-                        // Name & Bio
                         Text(_displayName, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 6),
-                        if (_bio.isNotEmpty)
-                          Text(_bio, textAlign: TextAlign.center, style: TextStyle(color: Colors.grey[700], fontSize: 14))
-                        else 
-                          const Text("No bio yet", style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic)),
-                          
-                        const SizedBox(height: 24),
-                        
-                        // Action Buttons (Row)
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: _showEditProfileModal,
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(vertical: 12),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                  side: BorderSide(color: Colors.grey[300]!),
-                                ),
-                                child: const Text("Edit Profile", style: TextStyle(color: Colors.black, fontWeight: FontWeight.w600)),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: () {
-                                  // Navigate to the management list view we created earlier
-                                  Provider.of<AudioService>(context, listen: false).stop();
-                                  Navigator.push(context, MaterialPageRoute(builder: (context) => const MyPostsPage()));
-                                },
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(vertical: 12),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                  side: BorderSide(color: Colors.grey[300]!),
-                                ),
-                                child: const Text("Manage Posts", style: TextStyle(color: Colors.black, fontWeight: FontWeight.w600)),
-                              ),
-                            ),
-                          ],
+                        Text(
+                          _bio.isNotEmpty ? _bio : "No bio yet", 
+                          textAlign: TextAlign.center, 
+                          style: TextStyle(color: _bio.isNotEmpty ? Colors.grey[700] : Colors.grey, fontSize: 14, fontStyle: _bio.isNotEmpty ? FontStyle.normal : FontStyle.italic)
                         ),
+                        const SizedBox(height: 24),
+                        Row(children: [
+                            Expanded(child: OutlinedButton(onPressed: _showEditProfileModal, style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), side: BorderSide(color: Colors.grey[300]!)), child: const Text("Edit Profile", style: TextStyle(color: Colors.black, fontWeight: FontWeight.w600)))),
+                            const SizedBox(width: 10),
+                            Expanded(child: OutlinedButton(onPressed: () { Provider.of<AudioService>(context, listen: false).stop(); Navigator.push(context, MaterialPageRoute(builder: (context) => const MyPostsPage())); }, style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)), side: BorderSide(color: Colors.grey[300]!)), child: const Text("Manage Posts", style: TextStyle(color: Colors.black, fontWeight: FontWeight.w600)))),
+                        ]),
                         const SizedBox(height: 30),
                       ],
                     ),
                   ),
                 ),
                 
-                // Sticky Header for "Posts"
-                SliverPersistentHeader(
-                  pinned: true,
-                  delegate: _SliverAppBarDelegate(
-                    child: Container(
-                      color: Colors.white,
-                      child: Column(
-                        children: [
-                          const Divider(height: 1),
-                          Expanded(
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const Icon(Icons.grid_on, size: 20),
-                                const SizedBox(width: 8),
-                                Text(
-                                  "$_postsCount POSTS", 
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, letterSpacing: 1.2)
-                                ),
-                              ],
-                            ),
-                          ),
-                          const Divider(height: 1),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
-                // Posts Grid
+                // 2. LAZY LOADING STREAM BUILDER
                 StreamBuilder<QuerySnapshot>(
-                  stream: _firestore
-                      .collection('posts')
-                      .where('userId', isEqualTo: _currentUser?.uid)
-                      .orderBy('createdAt', descending: true)
-                      .snapshots(),
+                  stream: _postsStream, 
                   builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const SliverToBoxAdapter(child: Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator())));
-                    }
-                    
                     final docs = snapshot.data?.docs ?? [];
+                    final int realCount = docs.length;
+                    final bool isGridLoading = snapshot.connectionState == ConnectionState.waiting;
 
-                    if (docs.isEmpty) {
-                      return SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 60.0),
-                          child: Column(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(20),
-                                decoration: BoxDecoration(color: Colors.grey[50], shape: BoxShape.circle),
-                                child: Icon(Icons.camera_alt_outlined, size: 40, color: Colors.grey[400]),
+                    return SliverMainAxisGroup(
+                      slivers: [
+                        // A. STICKY HEADER
+                        SliverPersistentHeader(
+                          pinned: true,
+                          delegate: _SliverAppBarDelegate(
+                            child: Container(
+                              color: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              child: Column(
+                                children: [
+                                  const Divider(height: 1),
+                                  const SizedBox(height: 12),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(Icons.grid_on, size: 20),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        isGridLoading ? "..." : "$realCount POSTS", 
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, letterSpacing: 1.2)
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  const Divider(height: 1),
+                                ],
                               ),
-                              const SizedBox(height: 16),
-                              Text("Capture your first memory", style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.w500)),
-                            ],
+                            ),
                           ),
                         ),
-                      );
-                    }
 
-                    return SliverGrid(
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 3,
-                        crossAxisSpacing: 1,
-                        mainAxisSpacing: 1,
-                      ),
-                      delegate: SliverChildBuilderDelegate(
-                        (context, index) {
-                          final data = docs[index].data() as Map<String, dynamic>;
-                          List<dynamic>? urls = data['imageUrls'] as List<dynamic>?;
-                          String? imageUrl = (urls != null && urls.isNotEmpty) ? urls[0] : data['image'];
-                          bool isMulti = (urls != null && urls.length > 1);
-
-                          return GestureDetector(
-                            onTap: () {
-                               Provider.of<AudioService>(context, listen: false).stop();
-                               Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => PostDetailPage(postId: docs[index].id)),
-                              );
-                            },
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                Container(
-                                  color: Colors.grey[200],
-                                  child: imageUrl != null 
-                                    ? CachedNetworkImage(
-                                        imageUrl: imageUrl,
-                                        fit: BoxFit.cover,
-                                        memCacheWidth: 400, // Optimize memory
-                                      )
-                                    : const Icon(Icons.image),
-                                ),
-                                if (isMulti)
-                                  const Positioned(
-                                    top: 6, right: 6,
-                                    child: Icon(Icons.filter_none, color: Colors.white, size: 16, shadows: [Shadow(color: Colors.black54, blurRadius: 2)]),
-                                  ),
-                              ],
+                        // B. THE LAZY GRID
+                        if (isGridLoading)
+                           const SliverToBoxAdapter(child: Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator())))
+                        else if (realCount == 0)
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 60.0),
+                              child: Column(children: [
+                                  Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: Colors.grey[50], shape: BoxShape.circle), child: Icon(Icons.camera_alt_outlined, size: 40, color: Colors.grey[400])),
+                                  const SizedBox(height: 16),
+                                  Text("Capture your first memory", style: TextStyle(color: Colors.grey[600], fontWeight: FontWeight.w500)),
+                              ]),
                             ),
-                          );
-                        },
-                        childCount: docs.length,
-                      ),
+                          )
+                        else
+                          SliverGrid(
+                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 3,
+                              crossAxisSpacing: 1,
+                              mainAxisSpacing: 1,
+                            ),
+                            delegate: SliverChildBuilderDelegate(
+                              (context, index) {
+                                final data = docs[index].data() as Map<String, dynamic>;
+                                
+                                // 1. Get raw URL
+                                List<dynamic>? urls = data['imageUrls'] as List<dynamic>?;
+                                String? rawUrl = (urls != null && urls.isNotEmpty) ? urls[0] : data['image'];
+                                bool isMulti = (urls != null && urls.length > 1);
+
+                                // 2. Detect Video
+                                bool isVideo = rawUrl != null && (
+                                  rawUrl.contains('/video/') || 
+                                  rawUrl.endsWith('.mp4') || 
+                                  rawUrl.endsWith('.mov') || 
+                                  rawUrl.endsWith('.avi')
+                                );
+
+                                // 3. FIX: Convert to Cloudinary JPG Thumbnail
+                                String? displayUrl = rawUrl;
+                                if (isVideo && rawUrl!.contains('cloudinary.com')) {
+                                   displayUrl = rawUrl.replaceAll(RegExp(r'\.[a-zA-Z0-9]+$'), '.jpg');
+                                }
+
+                                return GestureDetector(
+                                  onTap: () {
+                                     Provider.of<AudioService>(context, listen: false).stop();
+                                     Navigator.push(
+                                      context,
+                                      MaterialPageRoute(builder: (context) => PostDetailPage(postId: docs[index].id)),
+                                    );
+                                  },
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      Container(
+                                        color: Colors.grey[200],
+                                        child: displayUrl != null 
+                                          ? CachedNetworkImage(
+                                              imageUrl: displayUrl, 
+                                              fit: BoxFit.cover, 
+                                              memCacheWidth: 400,
+                                              placeholder: (c, u) => Container(color: Colors.grey[200]),
+                                              errorWidget: (c, u, e) => const Icon(Icons.broken_image, color: Colors.grey),
+                                            )
+                                          : const Icon(Icons.image),
+                                      ),
+                                      
+                                      if (isVideo)
+                                        const Center(
+                                          child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 30),
+                                        ),
+
+                                      if (isMulti)
+                                        const Positioned(
+                                          top: 6, right: 6,
+                                          child: Icon(Icons.filter_none, color: Colors.white, size: 16, shadows: [Shadow(color: Colors.black54, blurRadius: 2)]),
+                                        ),
+                                    ],
+                                  ),
+                                );
+                              },
+                              childCount: realCount,
+                            ),
+                          ),
+                      ],
                     );
-                  },
+                  }
                 ),
+                
                 const SliverToBoxAdapter(child: SizedBox(height: 40)),
               ],
             ),
             
-            // Uploading Indicator Overlay
             if (_isUploading)
-              Container(
-                color: Colors.black.withOpacity(0.5),
-                child: const Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      CircularProgressIndicator(color: Colors.white),
-                      SizedBox(height: 16),
-                      Text("Uploading...", style: TextStyle(color: Colors.white))
-                    ],
-                  ),
-                ),
-              )
+              Container(color: Colors.black.withOpacity(0.5), child: const Center(child: CircularProgressIndicator(color: Colors.white)))
           ],
         ),
       ),
     );
   }
+}
 
-  }
-
-// Helper for the Sticky Header
 class _SliverAppBarDelegate extends SliverPersistentHeaderDelegate {
   final Widget child;
   _SliverAppBarDelegate({required this.child});
-
   @override
-  double get minExtent => 50;
+  double get minExtent => 80;
   @override
-  double get maxExtent => 50;
-
+  double get maxExtent => 80;
   @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
-    return child;
-  }
-
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) { return child; }
   @override
-  bool shouldRebuild(_SliverAppBarDelegate oldDelegate) {
-    return false;
-  }
+  bool shouldRebuild(_SliverAppBarDelegate oldDelegate) { return true; }
 }
