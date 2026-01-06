@@ -9,7 +9,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 // IMPORTS
 import 'package:tour/pages/music_selection_page.dart';
 import 'package:tour/services/storage_service.dart';
-import 'package:tour/widgets/editable_media_section.dart'; // Ensure this matches your file name
+import 'package:tour/services/cloudinary_service.dart'; // <--- IMPORT THIS
+import 'package:tour/widgets/editable_media_section.dart';
 
 class EditPostPage extends StatefulWidget {
   final Map<String, dynamic> currentData; 
@@ -22,17 +23,17 @@ class EditPostPage extends StatefulWidget {
 }
 
 class _EditPostPageState extends State<EditPostPage> {
+  // Services
   final StorageService _storage = CloudinaryStorageService();
+  final CloudinaryService _videoService = CloudinaryService(); // <--- NEW SERVICE
 
   late TextEditingController _locationController;
   late TextEditingController _descriptionController;
   
-  // 1. SNAPSHOT: The "Before" state (used for deletion logic)
+  // Lists
   List<String> _originalUrls = [];
-  
-  // 2. WORKING LISTS: The "After" state
-  List<String> _existingImageUrls = []; // URLs already on cloud
-  List<XFile> _newImages = [];          // New files from phone (NEED UPLOAD)
+  List<String> _existingImageUrls = [];
+  List<XFile> _newImages = []; 
 
   bool _isUpdating = false;
   
@@ -52,14 +53,12 @@ class _EditPostPageState extends State<EditPostPage> {
     _locationController = TextEditingController(text: widget.currentData['location']);
     _descriptionController = TextEditingController(text: widget.currentData['description']);
 
-    // Initialize the working list from passed data
     if (widget.currentData['imageUrls'] != null) {
       _existingImageUrls = List<String>.from(widget.currentData['imageUrls']);
     } else if (widget.currentData['image'] != null) {
       _existingImageUrls = [widget.currentData['image']];
     }
     
-    // Save original state for comparison later
     _originalUrls = List.from(_existingImageUrls);
 
     _selectedMusicUrl = widget.currentData['musicUrl'];
@@ -91,76 +90,150 @@ class _EditPostPageState extends State<EditPostPage> {
   // --- ACTIONS ---
 
   void _removeExistingImage(int index) {
-    setState(() {
-      _existingImageUrls.removeAt(index);
-    });
+    setState(() => _existingImageUrls.removeAt(index));
   }
 
   void _removeNewImage(int index) {
     setState(() => _newImages.removeAt(index));
   }
 
+  bool _isVideo(String path) {
+    final lower = path.toLowerCase();
+    return lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.avi') || lower.endsWith('.mkv');
+  }
+
   // ---------------------------------------------------------
-  // ⚡ THE FIX IS HERE: UPLOAD NEW + MERGE WITH OLD
+  // ⚡ UPDATED: WITH PROGRESS DIALOG & VIDEO SUPPORT
   // ---------------------------------------------------------
   Future<void> _updatePost() async {
     if (!mounted) return;
     
-    // 1. Validation: Ensure we don't end up with 0 images
     if (_existingImageUrls.isEmpty && _newImages.isEmpty) {
       _showSnackbar('Post must have at least one photo or video', Colors.red);
       return;
     }
-    
+
+    // 1. Setup Progress Notifier for the Dialog
+    ValueNotifier<double> progressNotifier = ValueNotifier(0.0);
+    ValueNotifier<String> statusNotifier = ValueNotifier("Preparing...");
+
+    // 2. Show the Dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false, 
+      builder: (context) {
+        return WillPopScope(
+          onWillPop: () async => false,
+          child: AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ValueListenableBuilder<String>(
+                  valueListenable: statusNotifier,
+                  builder: (context, status, _) => Text(status, style: const TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                const SizedBox(height: 20),
+                ValueListenableBuilder<double>(
+                  valueListenable: progressNotifier,
+                  builder: (context, value, _) => LinearProgressIndicator(
+                    value: value > 0 ? value : null, 
+                    backgroundColor: Colors.grey[200],
+                    minHeight: 8,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                ValueListenableBuilder<double>(
+                  valueListenable: progressNotifier,
+                  builder: (context, value, _) => Text("${(value * 100).toInt()}%"),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
     setState(() => _isUpdating = true);
 
     try {
-      // 2. UPLOAD NEW FILES (The missing step!)
       List<String> newUploadedUrls = [];
-      if (_newImages.isNotEmpty) {
-        // We use the same service as AddPostPage to upload the XFiles
-        newUploadedUrls = await _storage.uploadImages(_newImages, widget.postId);
+
+      // 3. UPLOAD NEW FILES ONE BY ONE
+      // We do this loop manually to track progress, especially for videos
+      int totalFiles = _newImages.length;
+      
+      for (int i = 0; i < totalFiles; i++) {
+        XFile file = _newImages[i];
+        bool isVideoFile = _isVideo(file.path);
+
+        statusNotifier.value = "Uploading ${i + 1} of $totalFiles...";
+        
+        String? uploadedUrl;
+
+        if (isVideoFile) {
+          // --- VIDEO UPLOAD (With Progress) ---
+          uploadedUrl = await _videoService.uploadVideo(
+            File(file.path), 
+            (fileProgress) {
+              // Calculate overall progress: 
+              // (Completed Files + Current File Progress) / Total Files
+              double overall = (i + fileProgress) / totalFiles;
+              progressNotifier.value = overall;
+            }
+          );
+        } else {
+          // --- IMAGE UPLOAD (Fast, standard) ---
+          // Use standard service, but wrap in list to reuse existing method
+          // Or optimize by uploading individually if your service allows.
+          // Here assuming _storage.uploadImages takes list, we pass single item list.
+          List<String> res = await _storage.uploadImages([file], widget.postId);
+          if (res.isNotEmpty) uploadedUrl = res.first;
+          
+          // Jump progress for images (instant)
+          progressNotifier.value = (i + 1) / totalFiles;
+        }
+
+        if (uploadedUrl != null) {
+          newUploadedUrls.add(uploadedUrl);
+        }
       }
 
-      // 3. MERGE: Combine [Old URLs] + [New URLs]
+      statusNotifier.value = "Saving changes...";
+
+      // 4. MERGE & CLEANUP
       final List<String> finalImageUrls = [..._existingImageUrls, ...newUploadedUrls];
 
-      // 4. CALCULATE DELETIONS (Diffing)
-      // Any URL that was in _originalUrls but NOT in finalImageUrls must be deleted
       final List<String> urlsToDelete = _originalUrls
           .where((url) => !finalImageUrls.contains(url))
           .toList();
 
-      print("--- UPDATE SUMMARY ---");
-      print("Existing kept: ${_existingImageUrls.length}");
-      print("New uploaded: ${newUploadedUrls.length}");
-      print("Total Final: ${finalImageUrls.length}");
-      print("Deleting: ${urlsToDelete.length}");
-
-      // 5. UPDATE FIRESTORE & CLEANUP
+      // 5. FIRESTORE UPDATE
       await Future.wait([
-        // Update DB with the FINAL list
         FirebaseFirestore.instance.collection('posts').doc(widget.postId).update({
           'location': _locationController.text.trim(),
           'description': _descriptionController.text.trim(),
-          'imageUrls': finalImageUrls, // <--- This now contains both!
+          'imageUrls': finalImageUrls,
           'image': finalImageUrls.isNotEmpty ? finalImageUrls.first : null,
           'musicUrl': _selectedMusicUrl,
           'musicTitle': _selectedMusicTitle,
           'musicArtist': _selectedMusicArtist,
         }),
-
-        // Delete removed items
         _performCleanup(urlsToDelete),
       ]);
 
       if (mounted) {
+        Navigator.pop(context); // Close Progress Dialog
+        Navigator.pop(context, true); // Close Edit Page
         _showSnackbar('Voyage updated successfully!', Colors.green);
-        Navigator.pop(context, true); // Return true to trigger refresh
       }
     } catch (e) {
-      print("Update Error: $e");
-      if (mounted) _showSnackbar('Failed to update. Please try again.', Colors.red);
+      debugPrint("Update Error: $e");
+      if (mounted) {
+        Navigator.pop(context); // Close Progress Dialog on error
+        _showSnackbar('Failed to update. Please try again.', Colors.red);
+      }
     } finally {
       if (mounted) setState(() => _isUpdating = false);
     }
@@ -171,12 +244,8 @@ class _EditPostPageState extends State<EditPostPage> {
       try {
         await _storage.deleteImage(url);
         await CachedNetworkImageProvider(url).evict();
-        if (url.contains('/video/')) {
-           final thumbUrl = url.replaceAll(RegExp(r'\.[a-zA-Z0-9]+$'), '.jpg');
-           await CachedNetworkImageProvider(thumbUrl).evict();
-        }
       } catch (e) {
-        print("Cleanup warning: $e");
+        debugPrint("Cleanup warning: $e");
       }
     }
   }
@@ -202,7 +271,7 @@ class _EditPostPageState extends State<EditPostPage> {
         actions: [
           TextButton(
             onPressed: _isUpdating ? null : _updatePost,
-            child: _isUpdating ? const CircularProgressIndicator() : const Text('SAVE'),
+            child: Text('SAVE', style: TextStyle(color: _isUpdating ? Colors.grey : Colors.blue, fontWeight: FontWeight.bold)),
           )
         ],
       ),
@@ -221,20 +290,15 @@ class _EditPostPageState extends State<EditPostPage> {
               
               const SizedBox(height: 20),
 
-              // --- REUSABLE EDITABLE SECTION ---
               EditableMediaSection(
                 existingUrls: _existingImageUrls,
                 newFiles: _newImages,
-                // When user picks NEW files, update _newImages
                 onNewFilesChanged: (List<XFile> updatedFiles) {
                   setState(() => _newImages = updatedFiles);
                 },
-                // When user removes EXISTING, call helper
                 onRemoveExisting: _removeExistingImage,
-                // When user removes NEW, call helper
                 onRemoveNew: _removeNewImage,
               ),
-              // --------------------------------
 
               const SizedBox(height: 20),
               _buildInputSection(Icons.location_on_outlined, 'Location', _locationController),
@@ -251,7 +315,7 @@ class _EditPostPageState extends State<EditPostPage> {
                 child: ElevatedButton.icon(
                   onPressed: _isUpdating ? null : _updatePost,
                   icon: const Icon(Icons.cloud_upload),
-                  label: Text(_isUpdating ? 'Updating...' : 'Update Voyage'),
+                  label: const Text('Update Voyage'),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.blue[800], foregroundColor: Colors.white),
                 ),
               ),

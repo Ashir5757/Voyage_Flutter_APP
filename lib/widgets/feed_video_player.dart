@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
+import 'package:cached_video_player_plus/cached_video_player_plus.dart'; // v3.0.3
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:provider/provider.dart';
 import 'package:tour/services/audio_service.dart';
+
+// FIX: Hide conflicting classes so Flutter uses the ones from cached_video_player_plus
+import 'package:video_player/video_player.dart'
+    hide VideoProgressIndicator, VideoProgressColors;
 
 class FeedVideoPlayer extends StatefulWidget {
   final String videoUrl;
@@ -18,16 +22,30 @@ class FeedVideoPlayer extends StatefulWidget {
   State<FeedVideoPlayer> createState() => _FeedVideoPlayerState();
 }
 
-class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
-  late VideoPlayerController _controller;
+class _FeedVideoPlayerState extends State<FeedVideoPlayer>
+    with AutomaticKeepAliveClientMixin {
   
+  // Controller for v3.0.3
+  late CachedVideoPlayerPlusController _controller;
+
+  // UI States
   bool _isInitialized = false;
+  bool _isPlaying = false;
+  bool _isBuffering = false;
   bool _isMuted = false;
   bool _hasError = false;
 
-  // Animation States
+  // Slider State
+  bool _isDragging = false;
+  double _currentSliderValue = 0.0;
+  double _totalDuration = 0.0;
+
+  // Animation
   bool _showAnimIcon = false;
   IconData _animIcon = Icons.play_arrow;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -38,27 +56,23 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
   @override
   void didUpdateWidget(covariant FeedVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    
-    // 1. Handle URL Changes (Recycling views)
+
+    // Reload if URL changes
     if (widget.videoUrl != oldWidget.videoUrl) {
       _disposeController();
-      setState(() {
-        _isInitialized = false;
-        _hasError = false;
-      });
-      _initializeVideo();     
+      _resetState();
+      _initializeVideo();
       return;
     }
-    
-    // 2. Handle Play/Pause Triggers from VisibilityDetector
-    if (!_hasError && _isInitialized) {
-       if (widget.shouldPlay && !oldWidget.shouldPlay) {
-         _stopBackgroundMusic();
-         _controller.play();
-       }
-       if (!widget.shouldPlay && oldWidget.shouldPlay) {
-         _controller.pause();
-       }
+
+    // Handle Play/Pause from Parent (Feed visibility)
+    if (_isInitialized && !_hasError) {
+      if (widget.shouldPlay && !oldWidget.shouldPlay) {
+        _stopBackgroundMusic();
+        _controller.play();
+      } else if (!widget.shouldPlay && oldWidget.shouldPlay) {
+        _controller.pause();
+      }
     }
   }
 
@@ -68,44 +82,104 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
     super.dispose();
   }
 
-  void _disposeController() {
-    try {
-      _controller.dispose();
-    } catch (e) {
-      debugPrint("Error disposing controller: $e");
+  void _resetState() {
+    if (mounted) {
+      setState(() {
+        _isInitialized = false;
+        _hasError = false;
+        _isBuffering = true;
+        _currentSliderValue = 0.0;
+        _totalDuration = 0.0;
+      });
     }
   }
 
+  void _disposeController() {
+    try {
+      _controller.removeListener(_onControllerUpdate);
+      _controller.dispose();
+    } catch (_) {}
+  }
+
   void _stopBackgroundMusic() {
-    Provider.of<AudioService>(context, listen: false).stop();
+    if (!mounted) return;
+    try {
+      Provider.of<AudioService>(context, listen: false).stop();
+    } catch (_) {}
+  }
+
+  String _optimizeCloudinaryUrl(String url) {
+    if (url.contains('cloudinary.com') && !url.contains('q_auto')) {
+      return url.replaceFirst('/upload/', '/upload/q_auto,vc_auto/');
+    }
+    return url;
   }
 
   Future<void> _initializeVideo() async {
-    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.videoUrl));
+    final optimizedUrl = _optimizeCloudinaryUrl(widget.videoUrl);
+
+    // v3.0.3 Syntax: .networkUrl(Uri)
+    _controller = CachedVideoPlayerPlusController.networkUrl(
+      Uri.parse(optimizedUrl),
+      httpHeaders: {},
+      invalidateCacheIfOlderThan: const Duration(days: 30),
+    );
+
+    _controller.addListener(_onControllerUpdate);
 
     try {
       await _controller.initialize();
       await _controller.setLooping(true);
-      
-      if (mounted) {
-        setState(() {
-          _isInitialized = true;
-          _hasError = false;
-        });
-        if (widget.shouldPlay) {
-          _stopBackgroundMusic();
-          _controller.play();
-        }
+      await _controller.setVolume(1.0);
+
+      if (!mounted) return;
+
+      setState(() {
+        _isInitialized = true;
+        _hasError = false;
+        // Try to get duration immediately
+        final duration = _controller.value.duration.inMilliseconds.toDouble();
+        _totalDuration = duration > 0 ? duration : 0.0;
+      });
+
+      if (widget.shouldPlay) {
+        _stopBackgroundMusic();
+        _controller.play();
       }
     } catch (e) {
       debugPrint("Video Error: $e");
-      if (mounted) {
-        setState(() => _hasError = true);
-      }
+      if (mounted) setState(() => _hasError = true);
     }
   }
 
-  // --- ACTIONS ---
+  void _onControllerUpdate() {
+    if (!mounted || !_isInitialized) return;
+
+    final value = _controller.value;
+
+    // FIX: Constantly check for duration if we missed it initially
+    if (_totalDuration <= 0.0 && value.duration.inMilliseconds > 0) {
+      setState(() {
+        _totalDuration = value.duration.inMilliseconds.toDouble();
+      });
+    }
+
+    // Update Slider position only if NOT dragging
+    if (!_isDragging) {
+      final position = value.position.inMilliseconds.toDouble();
+      setState(() {
+        _currentSliderValue = position.clamp(0.0, _totalDuration);
+        _isPlaying = value.isPlaying;
+        _isBuffering = value.isBuffering;
+      });
+    } else {
+      // Just update status if dragging
+      setState(() {
+        _isPlaying = value.isPlaying;
+        _isBuffering = value.isBuffering;
+      });
+    }
+  }
 
   void _togglePlay() {
     if (!_isInitialized) return;
@@ -122,8 +196,7 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
       _showAnimIcon = true;
     });
 
-    // Hide the icon after 1 second
-    Future.delayed(const Duration(milliseconds: 1000), () {
+    Future.delayed(const Duration(milliseconds: 800), () {
       if (mounted) setState(() => _showAnimIcon = false);
     });
   }
@@ -136,145 +209,100 @@ class _FeedVideoPlayerState extends State<FeedVideoPlayer> {
     });
   }
 
-  // Optimized Thumbnail Logic
-  // (Faster than video_thumbnail package for network urls)
-  String _getThumbnailUrl(String videoUrl) {
-    if (videoUrl.contains('cloudinary.com')) {
-      // Replaces .mp4 with .jpg to get the auto-generated thumbnail from server
-      return videoUrl.replaceAll(RegExp(r'\.[a-zA-Z0-9]+$'), '.jpg');
+  String _getThumbnailUrl(String url) {
+    if (url.contains('cloudinary.com')) {
+      return url.replaceAll(RegExp(r'\.[a-zA-Z0-9]+$'), '.jpg');
     }
-    return videoUrl; 
+    return url;
   }
-
-  // --- BUILDERS ---
 
   @override
   Widget build(BuildContext context) {
-    // 1. Error State
+    super.build(context);
+
     if (_hasError) {
       return Container(
         color: Colors.black,
-        child: const Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.error_outline, color: Colors.grey, size: 30),
-              SizedBox(height: 8),
-              Text("Media unavailable", style: TextStyle(color: Colors.grey, fontSize: 12)),
-            ],
-          ),
+        alignment: Alignment.center,
+        child: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline, color: Colors.grey, size: 32),
+            SizedBox(height: 8),
+            Text('Video unavailable', style: TextStyle(color: Colors.grey, fontSize: 12)),
+          ],
         ),
       );
     }
 
-    // 2. Loading State (Show Thumbnail)
-    if (!_isInitialized) {
-      return Stack(
-        alignment: Alignment.center,
-        children: [
-          CachedNetworkImage(
-            imageUrl: _getThumbnailUrl(widget.videoUrl),
-            fit: BoxFit.cover,
-            width: double.infinity,
-            height: double.infinity,
-            memCacheWidth: 600, // Memory optimization
-            errorWidget: (c, u, e) => Container(color: Colors.black),
-          ),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: Colors.black.withOpacity(0.3), shape: BoxShape.circle),
-            child: const CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-          ),
-        ],
-      );
-    }
-
-    // 3. Player State
     return GestureDetector(
       onTap: _togglePlay,
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // A. The Actual Video
-          SizedBox.expand(
-            child: FittedBox(
-              fit: BoxFit.cover,
-              child: SizedBox(
-                width: _controller.value.size.width,
-                height: _controller.value.size.height,
-                child: VideoPlayer(_controller),
-              ),
-            ),
-          ),
+          Container(color: Colors.black),
 
-          // B. Gradient Overlay (Bottom) for better text visibility
-          Positioned(
-            bottom: 0, left: 0, right: 0,
-            height: 80,
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.black.withOpacity(0.7)],
+          if (_isInitialized)
+            SizedBox.expand(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: _controller.value.size.width,
+                  height: _controller.value.size.height,
+                  child: CachedVideoPlayerPlus(_controller),
                 ),
               ),
             ),
-          ),
 
-          // C. Animated Play/Pause Icon (Center)
+          // Thumbnail Logic: Show if loading OR if it's at the very start
+          if (!_isInitialized || (_isInitialized && !_isPlaying && _currentSliderValue < 200))
+            CachedNetworkImage(
+              imageUrl: _getThumbnailUrl(widget.videoUrl),
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+              memCacheWidth: 600,
+              placeholder: (context, url) => Container(color: Colors.black),
+              errorWidget: (context, url, error) => Container(color: Colors.black),
+            ),
+
+          // Buffering Spinner (YouTube Style)
+          if (!_isInitialized || _isBuffering)
+            const SizedBox(
+              width: 40,
+              height: 40,
+              child: CircularProgressIndicator(color: Colors.white, strokeWidth: 3),
+            ),
+
+          // Play/Pause Animation
           if (_showAnimIcon)
             AnimatedOpacity(
-              opacity: _showAnimIcon ? 1.0 : 0.0,
+              opacity: _showAnimIcon ? 1 : 0,
               duration: const Duration(milliseconds: 200),
               child: Container(
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.5),
-                  shape: BoxShape.circle,
-                ),
+                decoration: BoxDecoration(color: Colors.black.withOpacity(0.5), shape: BoxShape.circle),
                 child: Icon(_animIcon, color: Colors.white, size: 40),
               ),
             ),
 
-          // D. Mute Button (Bottom Right)
+          // Mute Button
           Positioned(
-            bottom: 16,
+            bottom: 20, // Moved up slightly to avoid overlap with slider
             right: 16,
             child: GestureDetector(
               onTap: _toggleMute,
               child: Container(
                 padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.5),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  _isMuted || _controller.value.volume == 0 ? Icons.volume_off : Icons.volume_up,
-                  color: Colors.white,
-                  size: 20,
-                ),
+                decoration: BoxDecoration(color: Colors.black.withOpacity(0.5), shape: BoxShape.circle),
+                child: Icon(_isMuted ? Icons.volume_off : Icons.volume_up, color: Colors.white, size: 20),
               ),
             ),
           ),
 
-          // E. Progress Bar (Very Bottom)
-          Positioned(
-            bottom: 0, left: 0, right: 0,
-            child: SizedBox(
-              height: 4, // Sleek thin bar
-              child: VideoProgressIndicator(
-                _controller,
-                allowScrubbing: true,
-                padding: EdgeInsets.zero,
-                colors: VideoProgressColors(
-                  playedColor: const Color(0xFFFF2E63), // Voyage Brand Color?
-                  bufferedColor: Colors.white.withOpacity(0.3),
-                  backgroundColor: Colors.white.withOpacity(0.1),
-                ),
-              ),
-            ),
-          ),
+          // --- FIXED SLIDER ---
+          // Always render the container, but only show slider if we have duration
+         
         ],
       ),
     );

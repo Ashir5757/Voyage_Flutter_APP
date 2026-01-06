@@ -1,10 +1,10 @@
 import 'dart:io';
 import 'dart:async';
-import 'dart:typed_data'; // Required for Uint8List
+import 'dart:typed_data'; 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
-import 'package:video_thumbnail/video_thumbnail.dart'; // 1. IMPORT THIS
+import 'package:video_thumbnail/video_thumbnail.dart';
 
 class MediaPickerSection extends StatefulWidget {
   final List<XFile> selectedImages;
@@ -21,14 +21,11 @@ class MediaPickerSection extends StatefulWidget {
 }
 
 class _MediaPickerSectionState extends State<MediaPickerSection> {
-  // --- LIMITS ---
   final int _maxImageBytes = 10 * 1024 * 1024; // 10 MB
   final int _maxVideoBytes = 100 * 1024 * 1024; // 100 MB
   final Duration _maxVideoDuration = const Duration(minutes: 5); 
 
   final List<String> _allowedExtensions = ['jpg', 'jpeg', 'png', 'heic', 'webp', 'mp4', 'mov', 'avi', 'mkv'];
-
-  // --- LOGIC ---
 
   Future<void> _pickImages() async {
     final picker = ImagePicker();
@@ -48,7 +45,7 @@ class _MediaPickerSectionState extends State<MediaPickerSection> {
         }
       }
 
-      if (invalidTypeFound) _showError("Only images and videos are allowed.");
+      if (invalidTypeFound && mounted) _showError("Only images and videos are allowed.");
       
       if (validFiles.isNotEmpty) {
         final updatedList = List<XFile>.from(widget.selectedImages)..addAll(validFiles);
@@ -66,8 +63,6 @@ class _MediaPickerSectionState extends State<MediaPickerSection> {
       widget.onImagesChanged(updatedList);
     }
   }
-
-  // --- VALIDATORS ---
 
   bool _isValidMediaType(String path) {
     final extension = path.split('.').last.toLowerCase();
@@ -92,7 +87,6 @@ class _MediaPickerSectionState extends State<MediaPickerSection> {
     }
 
     if (isVideoFile) {
-      // We create a temporary controller just to check duration, then dispose immediately
       VideoPlayerController? testController;
       try {
         testController = VideoPlayerController.file(File(file.path));
@@ -126,8 +120,6 @@ class _MediaPickerSectionState extends State<MediaPickerSection> {
     final updatedList = List<XFile>.from(widget.selectedImages)..removeAt(index);
     widget.onImagesChanged(updatedList);
   }
-
-  // --- UI ---
 
   @override
   Widget build(BuildContext context) {
@@ -203,7 +195,6 @@ class _MediaPickerSectionState extends State<MediaPickerSection> {
   }
 }
 
-// --- OPTIMIZED THUMBNAIL WIDGET ---
 class _MediaThumbnailItem extends StatefulWidget {
   final File file;
   final VoidCallback onRemove;
@@ -232,13 +223,12 @@ class _MediaThumbnailItemState extends State<_MediaThumbnailItem> {
     }
   }
 
-  // 🚀 CRITICAL OPTIMIZATION: Generate static image instead of loading video
   Future<void> _generateThumbnail() async {
     try {
       final uint8list = await VideoThumbnail.thumbnailData(
         video: widget.file.path,
         imageFormat: ImageFormat.JPEG,
-        maxWidth: 200, // Keep resolution low for thumbnails to save RAM
+        maxWidth: 200, 
         quality: 50,
       );
       if (mounted) {
@@ -254,14 +244,12 @@ class _MediaThumbnailItemState extends State<_MediaThumbnailItem> {
 
   void _openFullScreen() {
     if (_isVideo) {
-      // We only initialize the heavy VideoPlayer when user CLICKS play
       final controller = VideoPlayerController.file(widget.file);
       controller.initialize().then((_) {
         Navigator.push(
           context, 
           MaterialPageRoute(builder: (_) => _ProfessionalVideoPlayer(controller: controller))
         ).then((_) {
-          // Dispose immediately when closed to free up hardware resources
           controller.dispose(); 
         });
       });
@@ -274,18 +262,13 @@ class _MediaThumbnailItemState extends State<_MediaThumbnailItem> {
       width: 140, margin: const EdgeInsets.only(right: 12),
       child: Stack(
         children: [
-          // 1. THUMBNAIL CONTENT
           ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: SizedBox.expand(
               child: _buildContent(),
             ),
           ),
-          
-          // 2. REMOVE BUTTON
           Positioned(top: 8, right: 8, child: GestureDetector(onTap: widget.onRemove, child: Container(padding: const EdgeInsets.all(6), decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle), child: const Icon(Icons.close, size: 14, color: Colors.white)))),
-          
-          // 3. PLAY ICON (Only for videos)
           if (_isVideo) 
             Center(child: GestureDetector(onTap: _openFullScreen, child: Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: Colors.black54, shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)), child: const Icon(Icons.play_arrow, color: Colors.white, size: 24)))),
         ],
@@ -310,7 +293,6 @@ class _MediaThumbnailItemState extends State<_MediaThumbnailItem> {
   }
 }
 
-// --- PROFESSIONAL FULL SCREEN PLAYER ---
 class _ProfessionalVideoPlayer extends StatefulWidget {
   final VideoPlayerController controller;
   const _ProfessionalVideoPlayer({required this.controller});
@@ -365,15 +347,12 @@ class _ProfessionalVideoPlayerState extends State<_ProfessionalVideoPlayer> {
           child: Stack(
             alignment: Alignment.center,
             children: [
-              // 1. VIDEO
               Center(
                 child: AspectRatio(
                   aspectRatio: widget.controller.value.aspectRatio,
                   child: VideoPlayer(widget.controller),
                 ),
               ),
-
-              // 2. CONTROLS OVERLAY
               AnimatedOpacity(
                 opacity: _showControls ? 1.0 : 0.0,
                 duration: const Duration(milliseconds: 300),
@@ -381,7 +360,6 @@ class _ProfessionalVideoPlayerState extends State<_ProfessionalVideoPlayer> {
                   color: Colors.black.withOpacity(0.3), 
                   child: Stack(
                     children: [
-                      // CLOSE
                       Positioned(
                         top: 20, left: 20,
                         child: IconButton(
@@ -389,7 +367,6 @@ class _ProfessionalVideoPlayerState extends State<_ProfessionalVideoPlayer> {
                           onPressed: () => Navigator.pop(context),
                         ),
                       ),
-                      // PLAY/PAUSE
                       Center(
                         child: IconButton(
                           iconSize: 64,
@@ -405,7 +382,6 @@ class _ProfessionalVideoPlayerState extends State<_ProfessionalVideoPlayer> {
                           },
                         ),
                       ),
-                      // SLIDER
                       Positioned(
                         bottom: 0, left: 0, right: 0,
                         child: Container(
